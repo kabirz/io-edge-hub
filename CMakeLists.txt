@@ -13,6 +13,7 @@ set(SOURCES
     src/fw_image.c
     src/udp_manager.c
     src/can_manager.c
+    src/modbus_client.c
 )
 
 if(WIN32)
