@@ -1,0 +1,7 @@
+build/
+out/
+.zcode/
+.superpowers/
+*.exe
+*.obj
+*.o
