@@ -64,6 +64,8 @@
 #define IDC_UPG_PROGRESS        2042   /* 进度条 */
 #define IDC_UPG_STATUS          2043   /* 静态: 状态文字 */
 #define IDC_UPG_LOG             2044   /* 多行日志 */
+#define IDC_UPG_VERSION         2045   /* 静态: 设备版本号显示 */
+#define IDC_UPG_GETVER          2046   /* 查询版本 按钮 */
 
 /* ===== tab3 控件 ID (3xxx) — Task 8 Modbus 调试 ===== */
 #define IDC_MB_CHAN_TCP         3001   /* 单选: TCP 通道 */

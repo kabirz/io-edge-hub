@@ -42,6 +42,8 @@ typedef struct {
 	HWND hUdpLbl, hIp[4], hTest;
 	/* CAN 行: 设备下拉 + 波特率下拉 + 连接按钮 + 状态 */
 	HWND hCanLbl1, hCanDev, hCanLbl2, hCanBaud, hCanConn, hCanStatus;
+	/* 版本信息行: label + 查询按钮 */
+	HWND hVerLbl, hVersion, hGetVer;
 	/* 文件 */
 	HWND hFile, hBrowse, hFileInfo;
 	/* 升级控制 */
@@ -234,7 +236,7 @@ static void on_browse(void)
 	memset(&ofn, 0, sizeof(ofn));
 	ofn.lStructSize = sizeof(ofn);
 	ofn.hwndOwner = g_upg.hSelf;
-	ofn.lpstrFilter = L"MCUboot 镜像 (*.bin)\0*.bin\0所有文件\0*.*\0";
+	ofn.lpstrFilter = L"固件镜像 (*.bin)\0*.bin\0所有文件\0*.*\0";
 	ofn.lpstrFile = path;
 	ofn.nMaxFile = MAX_PATH;
 	ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
@@ -278,7 +280,7 @@ static void on_browse(void)
 
 	/* MCUboot header 校验: magic + 头长度 + 镜像长度 + TLV info magic */
 	if (!fw_image_validate_header(buf, size)) {
-		set_fileinfo(L"非 MCUboot 镜像 (magic 不匹配)");
+		set_fileinfo(L"非固件镜像 (magic 不匹配)");
 		free(buf);
 		EnableWindow(g_upg.hStart, FALSE);
 		return;
@@ -302,6 +304,64 @@ static void on_browse(void)
 	         has_kh ? L"已提取" : L"缺失(将跳过校验)");
 	set_fileinfo(info);
 	EnableWindow(g_upg.hStart, TRUE);
+}
+
+/* ===== 版本查询 (UI 线程) ===== */
+
+/* 按当前通道查询设备版本并刷新版本 label.
+ * UDP: GET_VERSION (0x04) 到目标 IP; CAN: CanManager_GetVersion (0x101 cmd=2).
+ * 失败时 label 显示 "(查询失败)" 并把详细错误写入日志框. */
+static void on_query_version(void)
+{
+	char ver[80] = {0};
+	bool ok = false;
+	int can = current_channel();
+
+	if (!can) {
+		/* UDP: 取目标 IP */
+		char ip[64] = {0};
+		read_ip_to_str(g_upg.hIp, ip, sizeof(ip));
+		/* 空段当 0, 这里要求 4 段都填 */
+		bool ip_empty = false;
+		for (int i = 0; i < 4; i++) {
+			wchar_t buf[8];
+			if (GetWindowTextW(g_upg.hIp[i], buf, 8) == 0) { ip_empty = true; break; }
+		}
+		if (ip_empty) {
+			SetWindowTextW(g_upg.hVersion, L"(请先填目标 IP)");
+			return;
+		}
+		ok = UdpManager_GetVersion(g_upg.udp, ip, ver, sizeof(ver));
+		if (!ok) {
+			swprintf((wchar_t[160]){0}, 160, L"版本查询失败: %hs",
+			         UdpManager_GetLastError(g_upg.udp));
+		}
+	} else {
+		/* CAN: 必须已连接 */
+		if (!g_upg.can_connected) {
+			SetWindowTextW(g_upg.hVersion, L"(请先连接 PCAN)");
+			return;
+		}
+		ok = CanManager_GetVersion(g_upg.can, ver, sizeof(ver));
+		if (!ok) {
+			swprintf((wchar_t[160]){0}, 160, L"版本查询失败: %hs",
+			         CanManager_GetLastError(g_upg.can));
+		}
+	}
+
+	if (ok) {
+		wchar_t wver[160] = {0};
+		MultiByteToWideChar(CP_UTF8, 0, ver, -1, wver, 160);
+		SetWindowTextW(g_upg.hVersion, wver);
+		log_append_ptr(L"版本查询成功");
+	} else {
+		SetWindowTextW(g_upg.hVersion, L"(查询失败)");
+		wchar_t m[200];
+		swprintf(m, 200, L"版本查询失败: %hs",
+		         can ? CanManager_GetLastError(g_upg.can)
+		             : UdpManager_GetLastError(g_upg.udp));
+		log_append_ptr(m);
+	}
 }
 
 /* ===== CAN 连接 (UI 线程) ===== */
@@ -363,6 +423,8 @@ static void on_can_connect(void)
 	SetWindowTextW(g_upg.hCanStatus, m);
 	EnableWindow(g_upg.hCanDev, FALSE);
 	EnableWindow(g_upg.hCanBaud, FALSE);
+	/* 连接成功后自动查询一次设备版本 */
+	on_query_version();
 }
 
 /* ===== UDP worker 线程 =====
@@ -505,6 +567,8 @@ static void on_start(void)
 			            MB_ICONWARNING);
 			return;
 		}
+		/* UDP: 升级前查询一次设备版本, 刷新 label */
+		on_query_version();
 		g_upg.cur_test = (SendMessageW(g_upg.hTest, BM_GETCHECK, 0, 0) == BST_CHECKED);
 		g_upg.cur_permanent = !g_upg.cur_test;
 	} else {
@@ -571,6 +635,7 @@ static void on_command(WPARAM wParam)
 
 	switch (id) {
 	case IDC_UPG_BROWSE:    on_browse(); break;
+	case IDC_UPG_GETVER:    on_query_version(); break;
 	case IDC_UPG_START:     on_start(); break;
 	case IDC_UPG_CANCEL:    on_cancel(); break;
 	case IDC_UPG_CAN_CONN:  on_can_connect(); break;
@@ -630,36 +695,44 @@ static void create_controls(HWND hWnd)
 	/* 默认 UDP, 隐藏 CAN 行 */
 	apply_channel_visibility();
 
+	/* ===== 版本信息行: label + 版本号静态 + 查询按钮 ===== */
+	g_upg.hVerLbl = create_label(L"设备版本:", gx + 12, 112, 60, 14);
+	g_upg.hVersion = CreateWindowExW(WS_EX_CLIENTEDGE, L"STATIC", L"(未查询)",
+		WS_CHILD | WS_VISIBLE | SS_LEFT,
+		gx + 76, 110, 360, 18, hWnd, (HMENU)(INT_PTR)IDC_UPG_VERSION, g_hInst, NULL);
+	SendMessageW(g_upg.hVersion, WM_SETFONT, (WPARAM)g_hFont, TRUE);
+	g_upg.hGetVer = create_button(L"查询版本", gx + 446, 108, 80, 22, IDC_UPG_GETVER);
+
 	/* ===== 固件文件 groupbox ===== */
-	create_groupbox(L"固件文件 (MCUboot .bin)", gx, 112, gw, 56);
-	create_label(L"路径:", gx + 12, 138, 36, 14);
+	create_groupbox(L"固件文件", gx, 146, gw, 56);
+	create_label(L"路径:", gx + 12, 172, 36, 14);
 	g_upg.hFile = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
 		WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | ES_READONLY,
-		gx + 50, 134, 380, 22, hWnd, (HMENU)(INT_PTR)IDC_UPG_FILE, g_hInst, NULL);
+		gx + 50, 168, 380, 22, hWnd, (HMENU)(INT_PTR)IDC_UPG_FILE, g_hInst, NULL);
 	SendMessageW(g_upg.hFile, WM_SETFONT, (WPARAM)g_hFont, TRUE);
-	g_upg.hBrowse = create_button(L"浏览...", gx + 438, 134, 70, 22, IDC_UPG_BROWSE);
-	g_upg.hFileInfo = create_label(L"(未选择)", gx + 516, 138, 180, 14);
+	g_upg.hBrowse = create_button(L"浏览...", gx + 438, 168, 70, 22, IDC_UPG_BROWSE);
+	g_upg.hFileInfo = create_label(L"(未选择)", gx + 516, 172, 180, 14);
 
 	/* ===== 升级控制 groupbox ===== */
-	create_groupbox(L"升级控制", gx, 176, gw, 64);
-	g_upg.hStart = create_button(L"开始升级", gx + 12, 202, 90, 26, IDC_UPG_START);
-	g_upg.hCancel = create_button(L"取消", gx + 110, 202, 70, 26, IDC_UPG_CANCEL);
+	create_groupbox(L"升级控制", gx, 210, gw, 64);
+	g_upg.hStart = create_button(L"开始升级", gx + 12, 236, 90, 26, IDC_UPG_START);
+	g_upg.hCancel = create_button(L"取消", gx + 110, 236, 70, 26, IDC_UPG_CANCEL);
 	EnableWindow(g_upg.hStart, FALSE);
 	EnableWindow(g_upg.hCancel, FALSE);
-	create_label(L"进度:", gx + 196, 206, 36, 14);
+	create_label(L"进度:", gx + 196, 240, 36, 14);
 	g_upg.hProgress = CreateWindowExW(0, PROGRESS_CLASSW, L"",
-		WS_CHILD | WS_VISIBLE, gx + 234, 204, 200, 18,
+		WS_CHILD | WS_VISIBLE, gx + 234, 238, 200, 18,
 		hWnd, (HMENU)(INT_PTR)IDC_UPG_PROGRESS, g_hInst, NULL);
 	SendMessageW(g_upg.hProgress, PBM_SETRANGE, 0, MAKELPARAM(0, 100));
 	SendMessageW(g_upg.hProgress, PBM_SETPOS, 0, 0);
-	g_upg.hStatus = create_label(L"就绪", gx + 442, 206, 250, 14);
+	g_upg.hStatus = create_label(L"就绪", gx + 442, 240, 250, 14);
 
 	/* ===== 操作日志 groupbox + 多行只读 EDIT ===== */
-	create_groupbox(L"操作日志", gx, 248, gw, 250);
+	create_groupbox(L"操作日志", gx, 282, gw, 216);
 	g_upg.hLog = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
 		WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_READONLY |
 		ES_AUTOVSCROLL | WS_VSCROLL,
-		gx + 12, 268, gw - 24, 222,
+		gx + 12, 302, gw - 24, 188,
 		hWnd, (HMENU)(INT_PTR)IDC_UPG_LOG, g_hInst, NULL);
 	SendMessageW(g_upg.hLog, WM_SETFONT, (WPARAM)g_hFont, TRUE);
 
@@ -685,7 +758,7 @@ static LRESULT CALLBACK upg_wndproc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
 		if (!g_upg.can) {
 			log_append_ptr(L"错误: CanManager 创建失败");
 		}
-		log_append_ptr(L"就绪. 请选择 MCUboot .bin 固件文件");
+		log_append_ptr(L"就绪. 请选择 .bin 固件文件");
 		return 0;
 	case WM_COMMAND:
 		on_command(wParam);

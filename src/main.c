@@ -1,5 +1,5 @@
-/* io-edge-hub 上位机 - Win32 GUI 主入口
- * Tab1: UDP 参数配置
+/* 数据采集卡软件 - Win32 GUI 主入口
+ * Tab1: 参数设置
  * Tab2: 固件升级 (UDP + CAN)
  * Tab3: Modbus 调试 (TCP + RTU)
  */
@@ -75,7 +75,7 @@ static LRESULT CALLBACK main_wndproc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM 
 			0, 0, 0, 0, hWnd, (HMENU)0, g_hInst, NULL);
 
 		TCITEMW it = { .mask = TCIF_TEXT };
-		it.pszText = (LPWSTR)L"UDP 参数配置";
+		it.pszText = (LPWSTR)L"参数设置";
 		TabCtrl_InsertItem(g_hTab, TAB_CONFIG, &it);
 		it.pszText = (LPWSTR)L"固件升级";
 		TabCtrl_InsertItem(g_hTab, TAB_UPGRADE, &it);
@@ -140,7 +140,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, PWSTR cmdLine, int sho
 	wc.hIcon = LoadIconW(hInstance, MAKEINTRESOURCEW(IDI_APP_ICON));
 	RegisterClassExW(&wc);
 
-	g_hMain = CreateWindowExW(0, wc.lpszClassName, L"io-edge-hub 上位机 v" APP_VERSION_W,
+	g_hMain = CreateWindowExW(0, wc.lpszClassName, L"数据采集卡软件 v" APP_VERSION_W,
 		WS_OVERLAPPEDWINDOW & ~WS_THICKFRAME & ~WS_MAXIMIZEBOX,
 		CW_USEDEFAULT, CW_USEDEFAULT, 720, 560,
 		NULL, NULL, hInstance, NULL);

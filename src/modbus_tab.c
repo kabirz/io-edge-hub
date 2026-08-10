@@ -870,7 +870,7 @@ static void create_controls(HWND hWnd)
 	}
 
 	/* ===== 寄存器表 groupbox ===== */
-	g_mb.hGbReg = create_groupbox(L"寄存器表 (双击写 RW, 选中后点查询读)", gx, 288, gw, 150);
+	g_mb.hGbReg = create_groupbox(L"寄存器表 (双击写 RW, 选中后点查询读)", gx, 288, gw, 120);
 	/* 刷新全部 + 自动刷新 (放在寄存器表上方) */
 	g_mb.hRefreshAll = create_button(L"刷新全部", gx + 12, 308, 80, 22, IDC_MB_REFRESH_ALL);
 	g_mb.hAutoRef = CreateWindowExW(0, L"BUTTON", L"自动刷新",
@@ -888,7 +888,7 @@ static void create_controls(HWND hWnd)
 	/* ListView */
 	g_mb.hRegList = CreateWindowExW(0, WC_LISTVIEWW, L"",
 		WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | WS_BORDER,
-		gx + 12, 336, gw - 24, 96, hWnd,
+		gx + 12, 336, gw - 24, 66, hWnd,
 		(HMENU)(INT_PTR)IDC_MB_REG_LIST, g_hInst, NULL);
 	SendMessageW(g_mb.hRegList, WM_SETFONT, (WPARAM)g_hFont, TRUE);
 	ListView_SetExtendedListViewStyle(g_mb.hRegList,
@@ -925,11 +925,11 @@ static void create_controls(HWND hWnd)
 	}
 
 	/* ===== 操作日志 groupbox ===== */
-	create_groupbox(L"操作日志", gx, 446, gw, 60);
+	create_groupbox(L"操作日志", gx, 414, gw, 100);
 	g_mb.hLog = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
 		WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_READONLY |
 		ES_AUTOVSCROLL | WS_VSCROLL,
-		gx + 12, 466, gw - 24, 36,
+		gx + 12, 434, gw - 24, 76,
 		hWnd, (HMENU)(INT_PTR)IDC_MB_LOG, g_hInst, NULL);
 	SendMessageW(g_mb.hLog, WM_SETFONT, (WPARAM)g_hFont, TRUE);
 }
