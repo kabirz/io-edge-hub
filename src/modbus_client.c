@@ -155,8 +155,8 @@ static int mb_transact(MbClient *m, const uint8_t *pdu, int pdulen,
 		 *    - FC01/02/03/04 正常: 已读 addr+fc(2B), 再读 1B byte_count(bc),
 		 *      再读 bc+2B (data + crc), 校验 CRC, 写 [fc][bc][data...] 到 out_pdu,
 		 *      返回 2+bc.
-		 *    - FC05/06/16 正常: 响应固定 8B (addr+fc+4B echo+CRC), 已读 2B, 再读 6B,
-		 *      校验 CRC, 写 7B PDU (fc+6B) 到 out_pdu, 返回 7.
+ *    - FC05/06/16 正常: 响应 ADU 固定 8B (addr+fc+4B echo+CRC), 已读 2B, 再读 6B,
+ *      校验 CRC, 写 5B PDU (fc+4B) 到 out_pdu, 返回 5.
 		 * 4. 任何 ReadFile 不足 / CRC 错误 → 填 last_error 返回 0. */
 
 		uint8_t adu[260];
