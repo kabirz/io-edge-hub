@@ -9,6 +9,8 @@ include_directories(${CMAKE_SOURCE_DIR}/include)
 
 set(SOURCES
     src/main.c
+    src/pcan_loader.c
+    src/fw_image.c
 )
 
 if(WIN32)
