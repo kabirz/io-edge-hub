@@ -1,0 +1,1042 @@
+/* io-edge-hub 上位机 - Tab3 "Modbus 调试"
+ *
+ * 程序化创建全部控件, 单一 g_mb 静态结构持有所有控件 HWND + MbClient 实例 + 寄存器
+ * 元数据缓存. WM_CREATE 创建控件 + MbClient_Create; WM_DESTROY 断开 + 销毁 + KillTimer.
+ *
+ * 通道: 单选 TCP / RTU. 切换时 ShowWindow 显示对应子区域 (IP/端口 vs COM/波特率).
+ * 连接: TCP 调 MbClient_ConnectTcp; RTU 调 MbClient_ConnectRtu. 单一连接.
+ *
+ * 四块面板 (groupbox 分隔):
+ *   - DI 面板 (16 LED, 只读): ReadDiscreteInputs(0,16) → 16 个 STATIC 控件,
+ *     WM_CTLCOLORSTATIC 按 bit 着色 (绿=ON, 灰=OFF).
+ *   - DO 面板 (8 按钮, 可写): 8 个 BUTTON. 点击 → WriteSingleCoil(addr,!state) →
+ *     立即 ReadCoils(0,8) 回读并更新按钮文字 (DOx ON/OFF).
+ *   - AI 面板 (4 文本, 只读): ReadInput(1,4) → AI1/AI2 显示 mA, AI3/AI4 显示 V.
+ *   - 寄存器表 ListView: 18 holding + 6 input, 双击写, "查询选中" 读单行.
+ *
+ * 自动刷新: 勾选 → SetTimer(hSelf, IDC_MB_TIMER, interval, NULL);
+ * WM_TIMER 只刷 DI/DO/AI 三块面板 (不动 holding 表, 避免干扰手工写寄存器).
+ */
+#include "modbus_client.h"   /* 须先于 windows.h 拉 winsock2.h (避免 winsock1 冲突) */
+#include "modbus_tab.h"
+#include "resource.h"
+#include <commctrl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <wchar.h>
+
+/* ===== 寄存器元数据表 (spec §7) ===== */
+
+enum { RW_RW, RW_RO, RW_WO, RW_WO_TRIG };
+
+typedef struct {
+	uint16_t addr;       /* 0-based offset */
+	const wchar_t *name;
+	bool is_input;       /* true=input (FC04), false=holding (FC03/06) */
+	int  rw;             /* RW_RW / RW_RO / RW_WO / RW_WO_TRIG */
+} RegMeta;
+
+static const RegMeta g_regs[] = {
+	/* holding (FC03 读 / FC06 写, offset 0x00-0x11) */
+	{0x00, L"DO输出控制",  false, RW_RW},
+	{0x01, L"DI使能位图",  false, RW_RW},
+	{0x02, L"AI使能位图",  false, RW_RW},
+	{0x03, L"DI采样间隔ms", false, RW_RW},
+	{0x04, L"AI采样间隔ms", false, RW_RW},
+	{0x05, L"历史保存开关", false, RW_RW},
+	{0x06, L"CAN业务帧ID", false, RW_RW},
+	{0x07, L"CAN波特率(k)", false, RW_RW},
+	{0x08, L"RS485波特率", false, RW_RW},
+	{0x09, L"Modbus从机ID", false, RW_RW},
+	{0x0A, L"IP第1字节",  false, RW_RW},
+	{0x0B, L"IP第2字节",  false, RW_RW},
+	{0x0C, L"IP第3字节",  false, RW_RW},
+	{0x0D, L"IP第4字节",  false, RW_RW},
+	{0x0E, L"时间戳高字", false, RW_WO_TRIG},
+	{0x0F, L"时间戳低字", false, RW_WO_TRIG},
+	{0x10, L"参数保存触发", false, RW_WO},
+	{0x11, L"重启触发",   false, RW_WO},
+	/* input (FC04 读, offset 0x00-0x05) */
+	{0x00, L"固件版本",   true,  RW_RO},
+	{0x01, L"AI1电流",   true,  RW_RO},
+	{0x02, L"AI2电流",   true,  RW_RO},
+	{0x03, L"AI3电压",   true,  RW_RO},
+	{0x04, L"AI4电压",   true,  RW_RO},
+	{0x05, L"DI位图",    true,  RW_RO},
+};
+#define REG_COUNT (int)(sizeof(g_regs) / sizeof(g_regs[0]))
+#define HOLDING_COUNT 18   /* g_regs 前 18 项为 holding */
+#define DI_COUNT 16
+#define DO_COUNT 8
+#define AI_COUNT 4
+
+/* ===== 静态状态: 所有控件 HWND + MbClient + 自动刷新 ===== */
+typedef struct {
+	HWND hSelf;
+	/* 通道单选 */
+	HWND hChanTcp, hChanRtu;
+	/* TCP 行 */
+	HWND hTcpLbl1, hIp[4], hTcpLbl2, hPort, hTcpLbl3, hUidTcp;
+	/* RTU 行 */
+	HWND hRtuLbl1, hCom, hRtuLbl2, hBaud, hRtuLbl3, hUidRtu;
+	/* 连接 + 状态 */
+	HWND hConn, hDisc, hStatus;
+	/* 刷新 + 自动刷新 */
+	HWND hRefreshAll, hAutoRef, hAutoRefInt, hAutoRefLbl;
+	/* 面板 groupbox */
+	HWND hGbDi, hGbDo, hGbAi, hGbReg;
+	/* DI 面板: 16 LED + 16 标签 */
+	HWND hDi[DI_COUNT];
+	/* DO 面板: 8 按钮 */
+	HWND hDo[DO_COUNT];
+	/* AI 面板: 4 文本 */
+	HWND hAi[AI_COUNT];
+	/* 寄存器表 */
+	HWND hRegList, hRegQuery, hRegHint;
+	/* 日志 */
+	HWND hLog;
+	/* manager */
+	MbClient *mb;
+	bool connected;
+	bool auto_timer;     /* SetTimer 是否激活 */
+	/* DI 当前位图 (用于 LED 着色, WM_CTLCOLORSTATIC 读) */
+	uint8_t di_bits[DI_COUNT];
+	bool di_valid;       /* di_bits 是否有效 */
+} ModbusTab;
+
+static ModbusTab g_mb;
+static HINSTANCE g_hInst = NULL;
+static HFONT g_hFont = NULL;
+static const wchar_t *MODBUS_TAB_CLASS = L"ioEdgeHubModbusTabCls";
+static BOOL g_classRegistered = FALSE;
+
+/* 串口与波特率选项 */
+static const int g_bauds[] = { 4800, 9600, 19200, 38400, 57600, 115200 };
+#define BAUD_COUNT (int)(sizeof(g_bauds) / sizeof(g_bauds[0]))
+
+/* ===== 控件创建辅助 (与 config_tab.c / upgrade_tab.c 一致) ===== */
+
+static HWND create_label(const wchar_t *text, int x, int y, int w, int h)
+{
+	HWND hw = CreateWindowExW(0, L"STATIC", text,
+		WS_CHILD | WS_VISIBLE, x, y, w, h,
+		g_mb.hSelf, NULL, g_hInst, NULL);
+	SendMessageW(hw, WM_SETFONT, (WPARAM)g_hFont, TRUE);
+	return hw;
+}
+
+static HWND create_edit(int x, int y, int w, int h, int id, DWORD extra)
+{
+	HWND hw = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+		WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | extra,
+		x, y, w, h, g_mb.hSelf, (HMENU)(INT_PTR)id, g_hInst, NULL);
+	SendMessageW(hw, WM_SETFONT, (WPARAM)g_hFont, TRUE);
+	return hw;
+}
+
+static HWND create_button(const wchar_t *text, int x, int y, int w, int h, int id)
+{
+	HWND hw = CreateWindowExW(0, L"BUTTON", text,
+		WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+		x, y, w, h, g_mb.hSelf, (HMENU)(INT_PTR)id, g_hInst, NULL);
+	SendMessageW(hw, WM_SETFONT, (WPARAM)g_hFont, TRUE);
+	return hw;
+}
+
+static HWND create_groupbox(const wchar_t *text, int x, int y, int w, int h)
+{
+	HWND hw = CreateWindowExW(0, L"BUTTON", text,
+		WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
+		x, y, w, h, g_mb.hSelf, NULL, g_hInst, NULL);
+	SendMessageW(hw, WM_SETFONT, (WPARAM)g_hFont, TRUE);
+	return hw;
+}
+
+/* 创建 4 段 IP 编辑框 (ES_NUMBER + 限 3 字符). 返回末尾 x 坐标. */
+static int create_ip_row(int x, int y, int ids[4], HWND out_hwnd[4])
+{
+	int seg_w = 34, dot_w = 6, gap = 2;
+	for (int i = 0; i < 4; i++) {
+		out_hwnd[i] = create_edit(x, y, seg_w, 22, ids[i], ES_NUMBER);
+		SendMessageW(out_hwnd[i], EM_SETLIMITTEXT, 3, 0);
+		x += seg_w;
+		if (i < 3) {
+			create_label(L".", x, y + 3, dot_w, 16);
+			x += dot_w + gap;
+		}
+	}
+	return x;
+}
+
+/* ===== 业务辅助 ===== */
+
+/* 日志框追加一行 (带 [HH:MM:SS] 时间戳). */
+static void log_append(const wchar_t *msg)
+{
+	SYSTEMTIME st;
+	GetLocalTime(&st);
+	wchar_t line[600];
+	swprintf(line, 600, L"[%02d:%02d:%02d] %ls\r\n",
+	         st.wHour, st.wMinute, st.wSecond, msg);
+	int len = GetWindowTextLengthW(g_mb.hLog);
+	SendMessageW(g_mb.hLog, EM_SETSEL, len, len);
+	SendMessageW(g_mb.hLog, EM_REPLACESEL, 0, (LPARAM)line);
+}
+
+/* 显示 Modbus 传输错误 (弹框 + 日志). */
+static void show_mb_error(const wchar_t *op)
+{
+	wchar_t m[256];
+	swprintf(m, 256, L"%ls 失败: %hs", op, MbClient_GetLastError(g_mb.mb));
+	log_append(m);
+	MessageBoxW(g_mb.hSelf, m, L"错误", MB_ICONERROR);
+}
+
+/* 当前选中通道: 0=TCP, 1=RTU */
+static int current_channel(void)
+{
+	return (SendMessageW(g_mb.hChanRtu, BM_GETCHECK, 0, 0) == BST_CHECKED) ? 1 : 0;
+}
+
+/* 切换通道: 显示/隐藏 TCP 与 RTU 子区域. */
+static void apply_channel_visibility(void)
+{
+	int rtu = current_channel();
+	/* TCP 行 */
+	ShowWindow(g_mb.hTcpLbl1, rtu ? SW_HIDE : SW_SHOW);
+	for (int i = 0; i < 4; i++) ShowWindow(g_mb.hIp[i], rtu ? SW_HIDE : SW_SHOW);
+	ShowWindow(g_mb.hTcpLbl2, rtu ? SW_HIDE : SW_SHOW);
+	ShowWindow(g_mb.hPort,    rtu ? SW_HIDE : SW_SHOW);
+	ShowWindow(g_mb.hTcpLbl3, rtu ? SW_HIDE : SW_SHOW);
+	ShowWindow(g_mb.hUidTcp,  rtu ? SW_HIDE : SW_SHOW);
+	/* RTU 行 */
+	ShowWindow(g_mb.hRtuLbl1, rtu ? SW_SHOW : SW_HIDE);
+	ShowWindow(g_mb.hCom,     rtu ? SW_SHOW : SW_HIDE);
+	ShowWindow(g_mb.hRtuLbl2, rtu ? SW_SHOW : SW_HIDE);
+	ShowWindow(g_mb.hBaud,    rtu ? SW_SHOW : SW_HIDE);
+	ShowWindow(g_mb.hRtuLbl3, rtu ? SW_SHOW : SW_HIDE);
+	ShowWindow(g_mb.hUidRtu,  rtu ? SW_SHOW : SW_HIDE);
+}
+
+/* 设置连接状态: 状态灯文字 + 按钮启用. is_conn=true 已连接. */
+static void set_conn_state(bool is_conn)
+{
+	g_mb.connected = is_conn;
+	if (is_conn) {
+		SetWindowTextW(g_mb.hStatus, L"● 已连接");
+		EnableWindow(g_mb.hConn, FALSE);
+		EnableWindow(g_mb.hDisc, TRUE);
+		EnableWindow(g_mb.hRefreshAll, TRUE);
+	} else {
+		SetWindowTextW(g_mb.hStatus, L"○ 未连接");
+		EnableWindow(g_mb.hConn, TRUE);
+		EnableWindow(g_mb.hDisc, FALSE);
+		EnableWindow(g_mb.hRefreshAll, FALSE);
+		/* 连接断开后 LED/DO/AI 文本失效 */
+		g_mb.di_valid = false;
+		InvalidateRect(g_mb.hSelf, NULL, FALSE);
+	}
+}
+
+/* R/W 列显示文字 */
+static const wchar_t *rw_label(int rw)
+{
+	switch (rw) {
+	case RW_RW:       return L"RW";
+	case RW_RO:       return L"RO";
+	case RW_WO:       return L"WO";
+	case RW_WO_TRIG:  return L"WO(触发)";
+	default:          return L"";
+	}
+}
+
+/* ===== 寄存器表 ListView 辅助 ===== */
+
+/* 把 holding/input 寄存器值格式化为显示串.
+ * - input 0x01/0x02 (AI1/AI2 电流): /100.0 mA
+ * - input 0x03/0x04 (AI3/AI4 电压): /100.0 V
+ * - 其余: 十进制 */
+static void format_reg_value(int row_idx, uint16_t value, wchar_t *out, int cap)
+{
+	const RegMeta *r = &g_regs[row_idx];
+	if (r->is_input) {
+		switch (r->addr) {
+		case 0x01: swprintf(out, cap, L"%u (%.2f mA)", value, value / 100.0); return;
+		case 0x02: swprintf(out, cap, L"%u (%.2f mA)", value, value / 100.0); return;
+		case 0x03: swprintf(out, cap, L"%u (%.2f V)",  value, value / 100.0); return;
+		case 0x04: swprintf(out, cap, L"%u (%.2f V)",  value, value / 100.0); return;
+		}
+	}
+	swprintf(out, cap, L"%u", value);
+}
+
+/* 更新 ListView 某行的"当前值"列. */
+static void update_listview_row(int row_idx, uint16_t value)
+{
+	wchar_t vs[64];
+	format_reg_value(row_idx, value, vs, 64);
+	ListView_SetItemText(g_mb.hRegList, row_idx, 2, vs);
+}
+
+/* ===== 面板刷新 ===== */
+
+/* 刷新 DI 面板: ReadDiscreteInputs(0,16) → 缓存位图 + 触发重绘. */
+static bool refresh_di(void)
+{
+	uint8_t bits[DI_COUNT];
+	if (!MbClient_ReadDiscreteInputs(g_mb.mb, 0, DI_COUNT, bits)) {
+		show_mb_error(L"读 DI (FC02)");
+		g_mb.di_valid = false;
+		return false;
+	}
+	memcpy(g_mb.di_bits, bits, DI_COUNT);
+	g_mb.di_valid = true;
+	/* 触发 16 个 LED STATIC 重绘 (InvalidateRect 触发 WM_CTLCOLORSTATIC) */
+	for (int i = 0; i < DI_COUNT; i++) {
+		if (g_mb.hDi[i]) InvalidateRect(g_mb.hDi[i], NULL, TRUE);
+	}
+	return true;
+}
+
+/* 刷新 DO 面板: ReadCoils(0,8) → 更新按钮文字. */
+static bool refresh_do(void)
+{
+	uint8_t bits[DO_COUNT];
+	if (!MbClient_ReadCoils(g_mb.mb, 0, DO_COUNT, bits)) {
+		show_mb_error(L"读 DO (FC01)");
+		return false;
+	}
+	for (int i = 0; i < DO_COUNT; i++) {
+		wchar_t buf[32];
+		swprintf(buf, 32, L"DO%d %ls", i + 1, bits[i] ? L"ON" : L"OFF");
+		SetWindowTextW(g_mb.hDo[i], buf);
+	}
+	return true;
+}
+
+/* 刷新 AI 面板: ReadInput(1,4) → 更新 4 个文本.
+ * 注: input offset 1-4 即 AI1-AI4 (offset 0 是固件版本). */
+static bool refresh_ai(void)
+{
+	uint16_t regs[AI_COUNT];
+	if (!MbClient_ReadInput(g_mb.mb, 1, AI_COUNT, regs)) {
+		show_mb_error(L"读 AI (FC04)");
+		return false;
+	}
+	for (int i = 0; i < AI_COUNT; i++) {
+		wchar_t buf[64];
+		if (i < 2) {
+			swprintf(buf, 64, L"AI%d: %.2f mA", i + 1, regs[i] / 100.0);
+		} else {
+			swprintf(buf, 64, L"AI%d: %.2f V",  i + 1, regs[i] / 100.0);
+		}
+		SetWindowTextW(g_mb.hAi[i], buf);
+	}
+	return true;
+}
+
+/* 刷新寄存器表全部 24 行: 18 holding + 6 input. 读失败时记日志但继续. */
+static void refresh_reg_table(void)
+{
+	uint16_t vals[REG_COUNT];
+	bool ok[REG_COUNT];
+
+	/* holding 18 个连续读 (offset 0x00-0x11, 一次 FC03 读 18 个) */
+	uint16_t hold[HOLDING_COUNT];
+	if (MbClient_ReadHolding(g_mb.mb, 0, HOLDING_COUNT, hold)) {
+		for (int i = 0; i < HOLDING_COUNT; i++) {
+			vals[i] = hold[i];
+			ok[i] = true;
+		}
+	} else {
+		log_append(L"批量读 holding 失败, 改逐个读");
+		for (int i = 0; i < HOLDING_COUNT; i++) {
+			ok[i] = MbClient_ReadHolding(g_mb.mb, g_regs[i].addr, 1, &vals[i]);
+		}
+	}
+	/* input 6 个连续读 (offset 0x00-0x05) */
+	uint16_t inp[6];
+	if (MbClient_ReadInput(g_mb.mb, 0, 6, inp)) {
+		for (int i = 0; i < 6; i++) {
+			vals[HOLDING_COUNT + i] = inp[i];
+			ok[HOLDING_COUNT + i] = true;
+		}
+	} else {
+		log_append(L"批量读 input 失败, 改逐个读");
+		for (int i = 0; i < 6; i++) {
+			ok[HOLDING_COUNT + i] = MbClient_ReadInput(
+				g_mb.mb, g_regs[HOLDING_COUNT + i].addr, 1, &vals[HOLDING_COUNT + i]);
+		}
+	}
+	/* 更新 ListView 行 */
+	for (int i = 0; i < REG_COUNT; i++) {
+		if (ok[i]) {
+			update_listview_row(i, vals[i]);
+		} else {
+			ListView_SetItemText(g_mb.hRegList, i, 2, L"(读取失败)");
+		}
+	}
+}
+
+/* ===== 连接 / 断开 ===== */
+
+static void on_connect(void)
+{
+	int rtu = current_channel();
+	uint8_t uid = 1;
+
+	if (rtu) {
+		/* RTU: COM + baud + uid */
+		wchar_t wbuf[16];
+		GetWindowTextW(g_mb.hUidRtu, wbuf, 16);
+		int v = _wtoi(wbuf);
+		if (v < 1 || v > 247) {
+			MessageBoxW(g_mb.hSelf, L"从机 ID 应在 1-247", L"输入错误",
+			            MB_ICONERROR);
+			return;
+		}
+		uid = (uint8_t)v;
+		int sel = (int)SendMessageW(g_mb.hCom, CB_GETCURSEL, 0, 0);
+		if (sel < 0) {
+			MessageBoxW(g_mb.hSelf, L"请选择串口", L"输入错误",
+			            MB_ICONERROR);
+			return;
+		}
+		wchar_t com_text[32] = {0};
+		SendMessageW(g_mb.hCom, CB_GETLBTEXT, sel, (LPARAM)com_text);
+		/* com_text 形如 "COM3"; 转为设备路径 \\.\COM3 */
+		wchar_t com_path[40];
+		swprintf(com_path, 40, L"\\\\.\\%ls", com_text);
+		int bsel = (int)SendMessageW(g_mb.hBaud, CB_GETCURSEL, 0, 0);
+		uint32_t baud = (bsel >= 0 && bsel < BAUD_COUNT) ? (uint32_t)g_bauds[bsel] : 9600;
+
+		wchar_t m[128];
+		swprintf(m, 128, L"正在连接 %ls @ %u (uid=%u)...", com_text, baud, uid);
+		log_append(m);
+		if (!MbClient_ConnectRtu(g_mb.mb, com_path, baud, uid)) {
+			show_mb_error(L"RTU 连接");
+			return;
+		}
+	} else {
+		/* TCP: IP + port + uid */
+		char ip[32];
+		int vip[4];
+		bool bad = false;
+		for (int i = 0; i < 4; i++) {
+			wchar_t wb[8];
+			GetWindowTextW(g_mb.hIp[i], wb, 8);
+			vip[i] = _wtoi(wb);
+			if (vip[i] < 0 || vip[i] > 255) { bad = true; break; }
+		}
+		if (bad) {
+			MessageBoxW(g_mb.hSelf, L"IP 各段必须在 0-255", L"输入错误",
+			            MB_ICONERROR);
+			return;
+		}
+		snprintf(ip, sizeof(ip), "%d.%d.%d.%d", vip[0], vip[1], vip[2], vip[3]);
+		wchar_t wp[16];
+		GetWindowTextW(g_mb.hPort, wp, 16);
+		int port = _wtoi(wp);
+		if (port <= 0 || port > 65535) port = 502;
+		wchar_t wu[16];
+		GetWindowTextW(g_mb.hUidTcp, wu, 16);
+		int uv = _wtoi(wu);
+		if (uv < 1 || uv > 247) {
+			MessageBoxW(g_mb.hSelf, L"从机 ID 应在 1-247", L"输入错误",
+			            MB_ICONERROR);
+			return;
+		}
+		uid = (uint8_t)uv;
+
+		wchar_t m[128];
+		swprintf(m, 128, L"正在连接 %hs:%d (uid=%u)...", ip, port, uid);
+		log_append(m);
+		if (!MbClient_ConnectTcp(g_mb.mb, ip, (uint16_t)port, uid)) {
+			show_mb_error(L"TCP 连接");
+			return;
+		}
+	}
+
+	set_conn_state(true);
+	wchar_t m[64];
+	swprintf(m, 64, L"已连接 (%ls)", rtu ? L"RTU" : L"TCP");
+	log_append(m);
+}
+
+static void on_disconnect(void)
+{
+	MbClient_Disconnect(g_mb.mb);
+	set_conn_state(false);
+	log_append(L"已断开");
+}
+
+/* ===== DO 按钮 / 查询选中 / 双击写 ===== */
+
+/* DO 按钮点击: 取当前按钮文字判断状态 → 翻转 → WriteSingleCoil → 回读 */
+static void on_do_click(int idx)
+{
+	/* 从按钮文字提取当前 ON/OFF (文字形如 "DO3 ON") */
+	wchar_t buf[32];
+	GetWindowTextW(g_mb.hDo[idx], buf, 32);
+	bool cur_on = wcsstr(buf, L"ON") != NULL;
+	bool new_on = !cur_on;
+	if (!MbClient_WriteSingleCoil(g_mb.mb, (uint16_t)idx, new_on)) {
+		show_mb_error(L"写 DO (FC05)");
+		return;
+	}
+	/* 回读全部 DO (设备可能多端控制, 以设备实际状态为准) */
+	refresh_do();
+}
+
+/* 查询选中行: 读单寄存器 → 更新当前值列. */
+static void on_query_selected(void)
+{
+	int sel = ListView_GetNextItem(g_mb.hRegList, -1, LVNI_SELECTED);
+	if (sel < 0 || sel >= REG_COUNT) {
+		MessageBoxW(g_mb.hSelf, L"请先在列表中选择一行", L"提示",
+		            MB_ICONWARNING);
+		return;
+	}
+	const RegMeta *r = &g_regs[sel];
+	uint16_t val = 0;
+	bool ok;
+	if (r->is_input) {
+		ok = MbClient_ReadInput(g_mb.mb, r->addr, 1, &val);
+	} else {
+		ok = MbClient_ReadHolding(g_mb.mb, r->addr, 1, &val);
+	}
+	if (!ok) {
+		show_mb_error(L"查询寄存器");
+		ListView_SetItemText(g_mb.hRegList, sel, 2, L"(读取失败)");
+		return;
+	}
+	update_listview_row(sel, val);
+	wchar_t m[128];
+	swprintf(m, 128, L"查询 %ls = %u", r->name, val);
+	log_append(m);
+}
+
+/* Win32 标准无 InputBox, 这里注册临时窗口类, 创建弹出窗口 (EDIT + OK/Cancel),
+ * 通过私有消息循环实现模态. 不依赖 dialog resource. */
+static wchar_t g_input_buf[32];
+static HWND g_hInputEdit;
+static HWND g_hInputDlg;
+static bool g_input_confirmed;
+
+static LRESULT CALLBACK input_wnd_proc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+	switch (msg) {
+	case WM_CREATE: {
+		g_hInputEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", g_input_buf,
+			WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+			10, 10, 300, 22, hWnd, (HMENU)100, g_hInst, NULL);
+		SendMessageW(g_hInputEdit, WM_SETFONT, (WPARAM)g_hFont, TRUE);
+		HWND hOk = CreateWindowExW(0, L"BUTTON", L"确定",
+			WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+			220, 40, 80, 24, hWnd, (HMENU)IDOK, g_hInst, NULL);
+		SendMessageW(hOk, WM_SETFONT, (WPARAM)g_hFont, TRUE);
+		HWND hCancel = CreateWindowExW(0, L"BUTTON", L"取消",
+			WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+			130, 40, 80, 24, hWnd, (HMENU)IDCANCEL, g_hInst, NULL);
+		SendMessageW(hCancel, WM_SETFONT, (WPARAM)g_hFont, TRUE);
+		return 0;
+	}
+	case WM_COMMAND:
+		if (LOWORD(wParam) == IDOK) {
+			GetWindowTextW(g_hInputEdit, g_input_buf, 32);
+			g_input_confirmed = true;
+			PostQuitMessage(0);
+			return 0;
+		}
+		if (LOWORD(wParam) == IDCANCEL) {
+			g_input_confirmed = false;
+			PostQuitMessage(0);
+			return 0;
+		}
+		break;
+	case WM_CLOSE:
+		g_input_confirmed = false;
+		PostQuitMessage(0);
+		return 0;
+	}
+	return DefWindowProcW(hWnd, msg, wParam, lParam);
+}
+
+/* 真正的输入框实现: 注册临时类, 模态循环. 取消返回 false. */
+static bool prompt_uint_modal(const wchar_t *title, unsigned *out_val)
+{
+	static const wchar_t *CLS = L"ioEdgeHubInputBoxCls";
+	static BOOL registered = FALSE;
+	if (!registered) {
+		WNDCLASSW wc = {0};
+		wc.lpfnWndProc = input_wnd_proc;
+		wc.hInstance = g_hInst;
+		wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+		wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+		wc.lpszClassName = CLS;
+		RegisterClassW(&wc);
+		registered = TRUE;
+	}
+
+	g_input_buf[0] = L'\0';
+	g_input_confirmed = false;
+	g_hInputDlg = CreateWindowExW(WS_EX_DLGMODALFRAME, CLS, title,
+		WS_POPUP | WS_CAPTION | WS_SYSMENU,
+		CW_USEDEFAULT, CW_USEDEFAULT, 330, 100,
+		g_mb.hSelf, NULL, g_hInst, NULL);
+	if (!g_hInputDlg) return false;
+	EnableWindow(g_mb.hSelf, FALSE);
+	ShowWindow(g_hInputDlg, SW_SHOW);
+	UpdateWindow(g_hInputDlg);
+	SetFocus(g_hInputEdit);
+
+	/* 模态消息循环 */
+	MSG msg;
+	while (GetMessageW(&msg, NULL, 0, 0) > 0) {
+		if (msg.message == WM_QUIT) break;
+		if (!IsDialogMessageW(g_hInputDlg, &msg)) {
+			TranslateMessage(&msg);
+			DispatchMessageW(&msg);
+		}
+	}
+
+	EnableWindow(g_mb.hSelf, TRUE);
+	SetFocus(g_mb.hSelf);
+	HWND hDlg = g_hInputDlg;
+	g_hInputDlg = NULL;
+	if (hDlg) DestroyWindow(hDlg);
+
+	if (!g_input_confirmed) return false;
+
+	/* 解析输入: 支持 0x 十六进制 和 十进制 */
+	wchar_t *end = NULL;
+	unsigned long v;
+	if (wcsncmp(g_input_buf, L"0x", 2) == 0 || wcsncmp(g_input_buf, L"0X", 2) == 0) {
+		v = wcstoul(g_input_buf + 2, &end, 16);
+	} else {
+		v = wcstoul(g_input_buf, &end, 10);
+	}
+	if (end == g_input_buf) return false;
+	if (v > 0xFFFF) return false;
+	*out_val = (unsigned)v;
+	return true;
+}
+
+/* 双击 ListView 行: 按 rw 决定读/写. */
+static void on_listview_dblclk(void)
+{
+	int sel = ListView_GetNextItem(g_mb.hRegList, -1, LVNI_SELECTED);
+	if (sel < 0 || sel >= REG_COUNT) return;
+	const RegMeta *r = &g_regs[sel];
+
+	if (r->rw == RW_RO) {
+		MessageBoxW(g_mb.hSelf, L"该寄存器只读", L"提示", MB_ICONINFORMATION);
+		return;
+	}
+	if (r->is_input) {
+		MessageBoxW(g_mb.hSelf, L"输入寄存器不可写", L"提示", MB_ICONINFORMATION);
+		return;
+	}
+	if (r->rw == RW_WO || r->rw == RW_WO_TRIG) {
+		/* 只写触发 (保存/重启): 写 1 触发, 弹确认 */
+		wchar_t m[128];
+		swprintf(m, 128, L"确认向 0x%02X (%ls) 写入触发值 1?", r->addr, r->name);
+		if (MessageBoxW(g_mb.hSelf, m, L"触发确认", MB_YESNO | MB_ICONQUESTION) != IDYES) {
+			return;
+		}
+		if (!MbClient_WriteSingleReg(g_mb.mb, r->addr, 1)) {
+			show_mb_error(L"写触发寄存器 (FC06)");
+			return;
+		}
+		log_append(L"已写入触发值 1");
+		return;
+	}
+	/* RW: 弹输入框 */
+	unsigned v = 0;
+	wchar_t title[64];
+	swprintf(title, 64, L"输入 %ls (0x%02X) 的新值", r->name, r->addr);
+	if (!prompt_uint_modal(title, &v)) return;
+	if (!MbClient_WriteSingleReg(g_mb.mb, r->addr, (uint16_t)v)) {
+		show_mb_error(L"写寄存器 (FC06)");
+		return;
+	}
+	/* 写后立即回读刷新该行 */
+	uint16_t rb = 0;
+	if (MbClient_ReadHolding(g_mb.mb, r->addr, 1, &rb)) {
+		update_listview_row(sel, rb);
+	}
+	wchar_t m[128];
+	swprintf(m, 128, L"已写 %ls = %u (回读 %u)", r->name, v, rb);
+	log_append(m);
+}
+
+/* ===== 刷新全部 ===== */
+
+static void on_refresh_all(void)
+{
+	if (!g_mb.connected) {
+		MessageBoxW(g_mb.hSelf, L"未连接", L"提示", MB_ICONWARNING);
+		return;
+	}
+	log_append(L"开始刷新全部...");
+	bool a = refresh_do();
+	bool b = refresh_di();
+	bool c = refresh_ai();
+	refresh_reg_table();
+	wchar_t m[96];
+	swprintf(m, 96, L"刷新完成 (DO=%ls, DI=%ls, AI=%ls, 表已更新)",
+	         a ? L"OK" : L"失败", b ? L"OK" : L"失败", c ? L"OK" : L"失败");
+	log_append(m);
+}
+
+/* 自动刷新 WM_TIMER 回调: 只刷 DI/DO/AI (不动 holding 表). */
+static void on_timer(void)
+{
+	if (!g_mb.connected) return;
+	refresh_do();
+	refresh_di();
+	refresh_ai();
+}
+
+/* 切换自动刷新开关. */
+static void on_autoref_toggle(void)
+{
+	bool checked = (SendMessageW(g_mb.hAutoRef, BM_GETCHECK, 0, 0) == BST_CHECKED);
+	if (checked) {
+		wchar_t wb[16];
+		GetWindowTextW(g_mb.hAutoRefInt, wb, 16);
+		int ms = _wtoi(wb);
+		if (ms < 100) ms = 1000;  /* 防止过小 */
+		SetTimer(g_mb.hSelf, IDC_MB_TIMER, (UINT)ms, NULL);
+		g_mb.auto_timer = true;
+		log_append(L"自动刷新已开启");
+	} else {
+		if (g_mb.auto_timer) {
+			KillTimer(g_mb.hSelf, IDC_MB_TIMER);
+			g_mb.auto_timer = false;
+		}
+		log_append(L"自动刷新已关闭");
+	}
+}
+
+/* ===== WM_COMMAND 分发 ===== */
+
+static void on_command(WPARAM wParam)
+{
+	WORD id = LOWORD(wParam);
+	WORD code = HIWORD(wParam);
+
+	/* 通道单选切换 */
+	if (id == IDC_MB_CHAN_TCP && code == BN_CLICKED) {
+		apply_channel_visibility();
+		return;
+	}
+	if (id == IDC_MB_CHAN_RTU && code == BN_CLICKED) {
+		apply_channel_visibility();
+		return;
+	}
+	if (code != BN_CLICKED) return;
+
+	/* DO 按钮 */
+	if (id >= IDC_MB_DO_BASE && id < IDC_MB_DO_BASE + DO_COUNT) {
+		on_do_click(id - IDC_MB_DO_BASE);
+		return;
+	}
+
+	switch (id) {
+	case IDC_MB_CONNECT:    on_connect(); break;
+	case IDC_MB_DISCONNECT: on_disconnect(); break;
+	case IDC_MB_REFRESH_ALL: on_refresh_all(); break;
+	case IDC_MB_AUTOREF:    on_autoref_toggle(); break;
+	case IDC_MB_REG_QUERY:  on_query_selected(); break;
+	}
+}
+
+/* ===== WM_CREATE: 创建所有控件 ===== */
+
+static void create_controls(HWND hWnd)
+{
+	g_mb.hSelf = hWnd;
+	g_hFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+
+	int gx = 8, gw = 700;
+
+	/* ===== 连接 groupbox ===== */
+	create_groupbox(L"连接", gx, 4, gw, 90);
+	/* 行1: 通道单选 */
+	create_label(L"通道:", gx + 12, 30, 40, 14);
+	g_mb.hChanTcp = CreateWindowExW(0, L"BUTTON", L"TCP",
+		WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON | WS_GROUP,
+		gx + 56, 26, 60, 22, hWnd, (HMENU)(INT_PTR)IDC_MB_CHAN_TCP, g_hInst, NULL);
+	g_mb.hChanRtu = CreateWindowExW(0, L"BUTTON", L"RTU",
+		WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON,
+		gx + 120, 26, 60, 22, hWnd, (HMENU)(INT_PTR)IDC_MB_CHAN_RTU, g_hInst, NULL);
+	SendMessageW(g_mb.hChanTcp, WM_SETFONT, (WPARAM)g_hFont, TRUE);
+	SendMessageW(g_mb.hChanRtu, WM_SETFONT, (WPARAM)g_hFont, TRUE);
+	SendMessageW(g_mb.hChanTcp, BM_SETCHECK, BST_CHECKED, 0); /* 默认 TCP */
+	/* 连接/断开 + 状态 */
+	g_mb.hConn = create_button(L"连接", gx + 200, 26, 70, 22, IDC_MB_CONNECT);
+	g_mb.hDisc = create_button(L"断开", gx + 274, 26, 70, 22, IDC_MB_DISCONNECT);
+	create_label(L"状态:", gx + 352, 30, 36, 14);
+	g_mb.hStatus = create_label(L"○ 未连接", gx + 388, 30, 120, 14);
+
+	/* 行2: TCP 行 (默认显示) — IP + 端口 + uid */
+	g_mb.hTcpLbl1 = create_label(L"目标 IP:", gx + 12, 60, 50, 14);
+	int ip_ids[4] = { IDC_MB_IP1, IDC_MB_IP2, IDC_MB_IP3, IDC_MB_IP4 };
+	create_ip_row(gx + 64, 56, ip_ids, g_mb.hIp);
+	/* 默认填 192.168.1.100 */
+	wchar_t ipdef[4][8] = { L"192", L"168", L"1", L"100" };
+	for (int i = 0; i < 4; i++) SetWindowTextW(g_mb.hIp[i], ipdef[i]);
+	g_mb.hTcpLbl2 = create_label(L"端口:", gx + 230, 60, 32, 14);
+	g_mb.hPort = create_edit(gx + 262, 56, 48, 22, IDC_MB_PORT, ES_NUMBER);
+	SetWindowTextW(g_mb.hPort, L"502");
+	g_mb.hTcpLbl3 = create_label(L"UID:", gx + 320, 60, 30, 14);
+	g_mb.hUidTcp = create_edit(gx + 350, 56, 40, 22, IDC_MB_UID, ES_NUMBER);
+	SetWindowTextW(g_mb.hUidTcp, L"1");
+
+	/* 行2 (重叠位置, 默认隐藏): RTU 行 — COM + 波特率 + uid */
+	g_mb.hRtuLbl1 = create_label(L"串口:", gx + 12, 60, 32, 14);
+	g_mb.hCom = CreateWindowExW(0, L"COMBOBOX", L"",
+		WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
+		gx + 44, 56, 90, 240, hWnd, (HMENU)(INT_PTR)IDC_MB_COM, g_hInst, NULL);
+	SendMessageW(g_mb.hCom, WM_SETFONT, (WPARAM)g_hFont, TRUE);
+	for (int i = 1; i <= 32; i++) {
+		wchar_t buf[16];
+		swprintf(buf, 16, L"COM%d", i);
+		SendMessageW(g_mb.hCom, CB_ADDSTRING, 0, (LPARAM)buf);
+	}
+	SendMessageW(g_mb.hCom, CB_SETCURSEL, 2, 0); /* 默认 COM3 */
+	g_mb.hRtuLbl2 = create_label(L"波特率:", gx + 144, 60, 44, 14);
+	g_mb.hBaud = CreateWindowExW(0, L"COMBOBOX", L"",
+		WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
+		gx + 188, 56, 90, 240, hWnd, (HMENU)(INT_PTR)IDC_MB_BAUD, g_hInst, NULL);
+	SendMessageW(g_mb.hBaud, WM_SETFONT, (WPARAM)g_hFont, TRUE);
+	for (int i = 0; i < BAUD_COUNT; i++) {
+		wchar_t buf[16];
+		swprintf(buf, 16, L"%d", g_bauds[i]);
+		SendMessageW(g_mb.hBaud, CB_ADDSTRING, 0, (LPARAM)buf);
+	}
+	SendMessageW(g_mb.hBaud, CB_SETCURSEL, 1, 0); /* 默认 9600 */
+	g_mb.hRtuLbl3 = create_label(L"UID:", gx + 290, 60, 30, 14);
+	g_mb.hUidRtu = create_edit(gx + 320, 56, 40, 22, IDC_MB_UID, ES_NUMBER);
+	/* 注意: TCP/RTU 共用 IDC_MB_UID id (同一时刻只显示一个, 命令处理按通道取值). */
+	SetWindowTextW(g_mb.hUidRtu, L"1");
+
+	/* 默认 TCP, 隐藏 RTU 行 */
+	apply_channel_visibility();
+
+	/* 初始按钮状态: 未连接时禁用断开/刷新 */
+	EnableWindow(g_mb.hDisc, FALSE);
+	EnableWindow(g_mb.hRefreshAll, FALSE);
+
+	/* ===== DI 面板 groupbox ===== */
+	g_mb.hGbDi = create_groupbox(L"DI (16 路数字输入, 只读)", gx, 102, gw, 56);
+	/* 16 个 LED (STATIC): 每个 LED 宽 38, 高 14, 4 行 x 4 列布局太宽; 改单行 16 个 */
+	int di_x = gx + 12;
+	int di_y = 124;
+	for (int i = 0; i < DI_COUNT; i++) {
+		wchar_t lbl[8];
+		swprintf(lbl, 8, L"%d", i + 1);
+		HWND hw = CreateWindowExW(0, L"STATIC", lbl,
+			WS_CHILD | WS_VISIBLE | SS_CENTER,
+			di_x + i * 42, di_y, 38, 22, hWnd,
+			(HMENU)(INT_PTR)(IDC_MB_DI_BASE + i), g_hInst, NULL);
+		SendMessageW(hw, WM_SETFONT, (WPARAM)g_hFont, TRUE);
+		g_mb.hDi[i] = hw;
+	}
+
+	/* ===== DO 面板 groupbox ===== */
+	g_mb.hGbDo = create_groupbox(L"DO (8 路数字输出, 点击切换)", gx, 166, gw, 56);
+	int do_x = gx + 12;
+	int do_y = 188;
+	for (int i = 0; i < DO_COUNT; i++) {
+		wchar_t lbl[32];
+		swprintf(lbl, 32, L"DO%d ?", i + 1);
+		HWND hw = create_button(lbl, do_x + i * 84, do_y, 78, 24,
+		                        IDC_MB_DO_BASE + i);
+		g_mb.hDo[i] = hw;
+	}
+
+	/* ===== AI 面板 groupbox ===== */
+	g_mb.hGbAi = create_groupbox(L"AI (4 路模拟输入)", gx, 230, gw, 50);
+	int ai_x = gx + 12;
+	int ai_y = 252;
+	for (int i = 0; i < AI_COUNT; i++) {
+		HWND hw = create_label(L"--", ai_x + i * 160, ai_y, 150, 18);
+		g_mb.hAi[i] = hw;
+	}
+
+	/* ===== 寄存器表 groupbox ===== */
+	g_mb.hGbReg = create_groupbox(L"寄存器表 (双击写 RW, 选中后点查询读)", gx, 288, gw, 150);
+	/* 刷新全部 + 自动刷新 (放在寄存器表上方) */
+	g_mb.hRefreshAll = create_button(L"刷新全部", gx + 12, 308, 80, 22, IDC_MB_REFRESH_ALL);
+	g_mb.hAutoRef = CreateWindowExW(0, L"BUTTON", L"自动刷新",
+		WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+		gx + 100, 308, 80, 22, hWnd, (HMENU)(INT_PTR)IDC_MB_AUTOREF, g_hInst, NULL);
+	SendMessageW(g_mb.hAutoRef, WM_SETFONT, (WPARAM)g_hFont, TRUE);
+	g_mb.hAutoRefLbl = create_label(L"间隔(ms):", gx + 184, 312, 56, 14);
+	g_mb.hAutoRefInt = create_edit(gx + 240, 308, 60, 22, IDC_MB_AUTOREF_INT, ES_NUMBER);
+	SetWindowTextW(g_mb.hAutoRefInt, L"1000");
+	/* 查询选中 */
+	g_mb.hRegQuery = create_button(L"查询选中", gx + 320, 308, 80, 22, IDC_MB_REG_QUERY);
+	g_mb.hRegHint = create_label(L"(提示: 双击 RW 行可写入; WO 行写触发值; RO 行只读)",
+		gx + 408, 312, 290, 14);
+
+	/* ListView */
+	g_mb.hRegList = CreateWindowExW(0, WC_LISTVIEWW, L"",
+		WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | WS_BORDER,
+		gx + 12, 336, gw - 24, 96, hWnd,
+		(HMENU)(INT_PTR)IDC_MB_REG_LIST, g_hInst, NULL);
+	SendMessageW(g_mb.hRegList, WM_SETFONT, (WPARAM)g_hFont, TRUE);
+	ListView_SetExtendedListViewStyle(g_mb.hRegList,
+		LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
+
+	/* 列头 */
+	LVCOLUMNW col;
+	memset(&col, 0, sizeof(col));
+	col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
+	col.cx = 70;  col.pszText = (LPWSTR)L"地址";   col.iSubItem = 0;
+	ListView_InsertColumn(g_mb.hRegList, 0, &col);
+	col.cx = 150; col.pszText = (LPWSTR)L"名称";   col.iSubItem = 1;
+	ListView_InsertColumn(g_mb.hRegList, 1, &col);
+	col.cx = 200; col.pszText = (LPWSTR)L"当前值"; col.iSubItem = 2;
+	ListView_InsertColumn(g_mb.hRegList, 2, &col);
+	col.cx = 80;  col.pszText = (LPWSTR)L"R/W";    col.iSubItem = 3;
+	ListView_InsertColumn(g_mb.hRegList, 3, &col);
+
+	/* 24 行 */
+	for (int i = 0; i < REG_COUNT; i++) {
+		const RegMeta *r = &g_regs[i];
+		wchar_t addr_str[16];
+		swprintf(addr_str, 16, L"%d", r->is_input ? (30001 + r->addr) : (40001 + r->addr));
+		LVITEMW it;
+		memset(&it, 0, sizeof(it));
+		it.mask = LVIF_TEXT;
+		it.iItem = i;
+		it.iSubItem = 0;
+		it.pszText = addr_str;
+		ListView_InsertItem(g_mb.hRegList, &it);
+		ListView_SetItemText(g_mb.hRegList, i, 1, (LPWSTR)r->name);
+		ListView_SetItemText(g_mb.hRegList, i, 2, (LPWSTR)L"(未读取)");
+		ListView_SetItemText(g_mb.hRegList, i, 3, (LPWSTR)rw_label(r->rw));
+	}
+
+	/* ===== 操作日志 groupbox ===== */
+	create_groupbox(L"操作日志", gx, 446, gw, 60);
+	g_mb.hLog = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+		WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_READONLY |
+		ES_AUTOVSCROLL | WS_VSCROLL,
+		gx + 12, 466, gw - 24, 36,
+		hWnd, (HMENU)(INT_PTR)IDC_MB_LOG, g_hInst, NULL);
+	SendMessageW(g_mb.hLog, WM_SETFONT, (WPARAM)g_hFont, TRUE);
+}
+
+/* ===== 窗口过程 ===== */
+
+static LRESULT CALLBACK mb_wndproc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+	switch (msg) {
+	case WM_CREATE:
+		g_hInst = ((LPCREATESTRUCT)lParam)->hInstance;
+		create_controls(hWnd);
+		g_mb.mb = MbClient_Create();
+		if (!g_mb.mb) {
+			log_append(L"错误: MbClient 创建失败");
+		} else {
+			log_append(L"就绪. 请选择通道 (TCP/RTU) 并连接设备");
+		}
+		return 0;
+	case WM_COMMAND:
+		on_command(wParam);
+		return 0;
+	case WM_NOTIFY: {
+		LPNMHDR pnmh = (LPNMHDR)lParam;
+		if (pnmh->hwndFrom == g_mb.hRegList && pnmh->code == NM_DBLCLK) {
+			on_listview_dblclk();
+		}
+		return 0;
+	}
+	case WM_TIMER:
+		if (wParam == IDC_MB_TIMER) {
+			on_timer();
+		}
+		return 0;
+	case WM_SIZE:
+		/* 控件保持固定位置 (与 tab1/tab2 一致). */
+		return 0;
+	case WM_CTLCOLORDLG:
+		/* 对话框底色 BTNFACE */
+		return (LRESULT)GetSysColorBrush(COLOR_BTNFACE);
+	case WM_CTLCOLORSTATIC: {
+		HWND hCtrl = (HWND)lParam;
+		/* DI LED 着色: 控件 ID 在 3100..3115 范围.
+		 * 三态使用预创建画刷 (进程级单例, 不释放), 避免 WM_CTLCOLORSTATIC 高频
+		 * 调用导致的 GDI 句柄泄漏. */
+		INT_PTR cid = GetWindowLongPtrW(hCtrl, GWLP_ID);
+		if (cid >= IDC_MB_DI_BASE && cid < IDC_MB_DI_BASE + DI_COUNT) {
+			static HBRUSH brOn = NULL, brOff = NULL, brUnk = NULL;
+			if (!brOn)  brOn  = CreateSolidBrush(RGB(0, 200, 0));
+			if (!brOff) brOff = CreateSolidBrush(RGB(128, 128, 128));
+			if (!brUnk) brUnk = CreateSolidBrush(RGB(200, 200, 200));
+			int idx = (int)(cid - IDC_MB_DI_BASE);
+			HDC hdc = (HDC)wParam;
+			SetBkMode(hdc, OPAQUE);
+			SetTextColor(hdc, RGB(255, 255, 255));
+			if (!g_mb.di_valid) {
+				SetBkColor(hdc, RGB(200, 200, 200));
+				return (LRESULT)brUnk;
+			} else if (g_mb.di_bits[idx]) {
+				SetBkColor(hdc, RGB(0, 200, 0));
+				return (LRESULT)brOn;
+			} else {
+				SetBkColor(hdc, RGB(128, 128, 128));
+				return (LRESULT)brOff;
+			}
+		}
+		/* 其他 STATIC: 透明 + BTNFACE 底色 */
+		SetBkMode((HDC)wParam, TRANSPARENT);
+		return (LRESULT)GetSysColorBrush(COLOR_BTNFACE);
+	}
+	case WM_DESTROY:
+		if (g_mb.auto_timer) {
+			KillTimer(hWnd, IDC_MB_TIMER);
+			g_mb.auto_timer = false;
+		}
+		if (g_mb.mb) {
+			if (g_mb.connected) {
+				MbClient_Disconnect(g_mb.mb);
+				g_mb.connected = false;
+			}
+			MbClient_Destroy(g_mb.mb);
+			g_mb.mb = NULL;
+		}
+		return 0;
+	}
+	return DefWindowProcW(hWnd, msg, wParam, lParam);
+}
+
+/* ===== 公共 API ===== */
+
+HWND ModbusTab_Create(HWND hParent, HINSTANCE hInst)
+{
+	g_hInst = hInst;
+
+	if (!g_classRegistered) {
+		WNDCLASSW wc = {0};
+		wc.lpfnWndProc = mb_wndproc;
+		wc.hInstance = hInst;
+		wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+		wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+		wc.lpszClassName = MODBUS_TAB_CLASS;
+		RegisterClassW(&wc);
+		g_classRegistered = TRUE;
+	}
+
+	HWND h = CreateWindowExW(0, MODBUS_TAB_CLASS, L"",
+		WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
+		0, 0, 700, 520, hParent, NULL, hInst, NULL);
+	return h;
+}

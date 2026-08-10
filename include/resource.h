@@ -64,6 +64,31 @@
 #define IDC_UPG_PROGRESS        2042   /* 进度条 */
 #define IDC_UPG_STATUS          2043   /* 静态: 状态文字 */
 #define IDC_UPG_LOG             2044   /* 多行日志 */
-/* tab3 控件 ID (3xxx) — Task 9 扩展 */
+
+/* ===== tab3 控件 ID (3xxx) — Task 8 Modbus 调试 ===== */
+#define IDC_MB_CHAN_TCP         3001   /* 单选: TCP 通道 */
+#define IDC_MB_CHAN_RTU         3002   /* 单选: RTU 通道 */
+#define IDC_MB_IP1              3010   /* TCP 目标 IP 4 段 */
+#define IDC_MB_IP2              3011
+#define IDC_MB_IP3              3012
+#define IDC_MB_IP4              3013
+#define IDC_MB_PORT             3014   /* TCP 端口 (默认 502) */
+#define IDC_MB_COM              3020   /* 串口下拉 COM1-COM32 */
+#define IDC_MB_BAUD             3021   /* 波特率下拉 */
+#define IDC_MB_UID              3022   /* 从机 ID */
+#define IDC_MB_CONNECT          3030   /* 连接按钮 */
+#define IDC_MB_DISCONNECT       3031   /* 断开按钮 */
+#define IDC_MB_STATUS           3032   /* 状态灯 + 文字 */
+#define IDC_MB_REFRESH_ALL      3040   /* 刷新全部按钮 */
+#define IDC_MB_AUTOREF          3041   /* 自动刷新复选框 */
+#define IDC_MB_AUTOREF_INT      3042   /* 自动刷新间隔 ms */
+#define IDC_MB_REG_LIST         3050   /* 寄存器 ListView */
+#define IDC_MB_REG_QUERY        3051   /* 查询选中行按钮 */
+#define IDC_MB_LOG              3060   /* 多行只读 EDIT */
+/* DI/DO/AI 动态创建子控件 (16+8+4 个), ID 自 3100 起 */
+#define IDC_MB_DI_BASE          3100   /* DI1..DI16 = 3100..3115 */
+#define IDC_MB_DO_BASE          3120   /* DO1..DO8 = 3120..3127 */
+#define IDC_MB_AI_BASE          3130   /* AI1..AI4 = 3130..3133 */
+#define IDC_MB_TIMER            1      /* SetTimer id */
 
 #endif /* RESOURCE_H */

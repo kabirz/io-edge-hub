@@ -16,6 +16,7 @@ set(SOURCES
     src/modbus_client.c
     src/config_tab.c
     src/upgrade_tab.c
+    src/modbus_tab.c
 )
 
 if(WIN32)
