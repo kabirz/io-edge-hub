@@ -798,11 +798,8 @@ static void create_controls(HWND hWnd)
 	g_mb.hSelf = hWnd;
 	g_hFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
 
-	/* 行坐标基准: 按子窗口实际宽度动态计算, groupbox 左右各留 12px 边距
-	 * (保持美观的对称边框; 与 tab1/tab2 一致, 防止控件溢出窗口) */
-	RECT rc;
-	GetClientRect(hWnd, &rc);
-	int gx = 12, gw = rc.right - 24;
+	/* 行坐标基准 */
+	int gx = 12, gw = 776;
 
 	/* ===== 连接 groupbox ===== */
 	create_groupbox(L"连接", gx, 4, gw, 90);

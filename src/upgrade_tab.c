@@ -679,11 +679,8 @@ static void create_controls(HWND hWnd)
 	g_upg.hSelf = hWnd;
 	g_hFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
 
-	/* 行坐标基准: 按子窗口实际宽度动态计算, groupbox 左右各留 12px 边距
-	 * (保持美观的对称边框; 同时避免右对齐按钮因窗口宽度变化而溢出) */
-	RECT rc;
-	GetClientRect(hWnd, &rc);
-	int gx = 12, gw = rc.right - 24;
+	/* 行坐标基准 */
+	int gx = 12, gw = 776;
 
 	/* ===== 升级通道 groupbox ===== */
 	create_groupbox(L"升级通道", gx, 4, gw, 100);
@@ -723,8 +720,8 @@ static void create_controls(HWND hWnd)
 		SendMessageW(g_upg.hCanBaud, CB_ADDSTRING, 0, (LPARAM)g_bauds[i].label);
 	}
 	SendMessageW(g_upg.hCanBaud, CB_SETCURSEL, 0, 0); /* 默认 250k */
-	g_upg.hCanRefresh = create_button(L"刷新", gx + gw - 130, 58, 60, 22, IDC_UPG_CAN_REFRESH);
-	g_upg.hCanConn = create_button(L"连接", gx + gw - 60, 58, 60, 22, IDC_UPG_CAN_CONN);
+	g_upg.hCanRefresh = create_button(L"刷新", gx + gw - 146, 58, 60, 22, IDC_UPG_CAN_REFRESH);
+	g_upg.hCanConn = create_button(L"连接", gx + gw - 76, 58, 60, 22, IDC_UPG_CAN_CONN);
 
 	/* 默认 UDP, 隐藏 CAN 行 */
 	apply_channel_visibility();
@@ -744,7 +741,7 @@ static void create_controls(HWND hWnd)
 		gx + 50, 172, 440, 22, hWnd, (HMENU)(INT_PTR)IDC_UPG_FILE, g_hInst, NULL);
 	SendMessageW(g_upg.hFile, WM_SETFONT, (WPARAM)g_hFont, TRUE);
 	g_upg.hBrowse = create_button(L"浏览...", gx + 498, 172, 70, 22, IDC_UPG_BROWSE);
-	g_upg.hFileInfo = create_label(L"(未选择)", gx + 576, 176, 176, 14);
+	g_upg.hFileInfo = create_label(L"(未选择)", gx + 576, 176, 200, 14);
 	/* 行2: 进度 + 状态 (左侧), 开始升级 + 重启 (右侧右对齐) */
 	create_label(L"进度:", gx + 12, 246, 36, 14);
 	g_upg.hProgress = CreateWindowExW(0, PROGRESS_CLASSW, L"",
@@ -753,8 +750,8 @@ static void create_controls(HWND hWnd)
 	SendMessageW(g_upg.hProgress, PBM_SETRANGE, 0, MAKELPARAM(0, 100));
 	SendMessageW(g_upg.hProgress, PBM_SETPOS, 0, 0);
 	g_upg.hStatus = create_label(L"就绪", gx + 318, 246, 300, 14);
-	g_upg.hStart = create_button(L"开始升级", gx + gw - 190, 242, 90, 26, IDC_UPG_START);
-	g_upg.hReboot = create_button(L"重启", gx + gw - 90, 242, 80, 26, IDC_UPG_REBOOT);
+	g_upg.hStart = create_button(L"开始升级", gx + gw - 206, 242, 90, 26, IDC_UPG_START);
+	g_upg.hReboot = create_button(L"重启", gx + gw - 106, 242, 80, 26, IDC_UPG_REBOOT);
 	EnableWindow(g_upg.hStart, FALSE);
 
 	/* ===== 操作日志 groupbox + 多行只读 EDIT ===== */
