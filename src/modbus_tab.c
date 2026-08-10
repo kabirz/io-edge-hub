@@ -255,28 +255,58 @@ static const wchar_t *rw_label(int rw)
 
 /* ===== 寄存器表 ListView 辅助 ===== */
 
-/* 把 holding/input 寄存器值格式化为显示串.
- * 格式: "0x%04X %016b" (十六进制 + 16 位逐位二进制), AI 通道末尾附工程单位.
- * - input 0x01/0x02 (AI1/AI2 电流): + (%.2f mA)
- * - input 0x03/0x04 (AI3/AI4 电压): + (%.2f V) */
+/* 把 holding/input 寄存器值格式化为显示串, 按寄存器实际含义显示:
+ * - 位图类 (DO控制/DI使能/AI使能/DI位图): 十六进制 + 逐位二进制
+ * - AI 电流/电压 (input 0x01-0x04, 0.01 精度): 十进制实际值 + 单位 (mA/V)
+ * - CAN 帧 ID / 固件版本 / 时间戳: 十六进制
+ * - 采样间隔: 十进制 + ms; CAN 波特率: 十进制 + k; RS485 波特率: 十进制 + bps
+ * - 其余 (从机ID/IP字节/开关/触发): 十进制 */
 static void format_reg_value(int row_idx, uint16_t value, wchar_t *out, int cap)
 {
 	const RegMeta *r = &g_regs[row_idx];
-	wchar_t bin[17];
-	for (int i = 0; i < 16; i++) {
-		bin[i] = (value & (1u << (15 - i))) ? L'1' : L'0';
-	}
-	bin[16] = 0;
 
 	if (r->is_input) {
 		switch (r->addr) {
-		case 0x01: swprintf(out, cap, L"0x%04X %ls (%.2f mA)", value, bin, value / 100.0); return;
-		case 0x02: swprintf(out, cap, L"0x%04X %ls (%.2f mA)", value, bin, value / 100.0); return;
-		case 0x03: swprintf(out, cap, L"0x%04X %ls (%.2f V)",  value, bin, value / 100.0); return;
-		case 0x04: swprintf(out, cap, L"0x%04X %ls (%.2f V)",  value, bin, value / 100.0); return;
+		case 0x01: swprintf(out, cap, L"%.2f mA", value / 100.0); return;
+		case 0x02: swprintf(out, cap, L"%.2f mA", value / 100.0); return;
+		case 0x03: swprintf(out, cap, L"%.2f V",  value / 100.0); return;
+		case 0x04: swprintf(out, cap, L"%.2f V",  value / 100.0); return;
+		case 0x05: { /* DI1-DI16 位图 */
+			wchar_t bin[17];
+			for (int i = 0; i < 16; i++) {
+				bin[i] = (value & (1u << (15 - i))) ? L'1' : L'0';
+			}
+			bin[16] = 0;
+			swprintf(out, cap, L"0x%04X %ls", value, bin);
+			return;
+		}
+		case 0x00: swprintf(out, cap, L"0x%04X", value); return; /* 固件版本 */
+		default:   swprintf(out, cap, L"%u", value); return;
 		}
 	}
-	swprintf(out, cap, L"0x%04X %ls", value, bin);
+
+	/* holding */
+	switch (r->addr) {
+	case 0x00: /* DO1-DO8 位图 */
+	case 0x01: /* DI 使能位图 */
+	case 0x02: { /* AI 使能位图 */
+		wchar_t bin[17];
+		for (int i = 0; i < 16; i++) {
+			bin[i] = (value & (1u << (15 - i))) ? L'1' : L'0';
+		}
+		bin[16] = 0;
+		swprintf(out, cap, L"0x%04X %ls", value, bin);
+		return;
+	}
+	case 0x03: swprintf(out, cap, L"%u ms", value); return;  /* DI 采样间隔 */
+	case 0x04: swprintf(out, cap, L"%u ms", value); return;  /* AI 采样间隔 */
+	case 0x06: swprintf(out, cap, L"0x%04X", value); return; /* CAN 业务帧 ID */
+	case 0x07: swprintf(out, cap, L"%u k", value); return;   /* CAN 波特率 (kbps) */
+	case 0x08: swprintf(out, cap, L"%u bps", value); return; /* RS485 波特率 */
+	case 0x0E: /* 时间戳高字 */
+	case 0x0F: swprintf(out, cap, L"0x%04X", value); return; /* 时间戳低字 */
+	default:   swprintf(out, cap, L"%u", value); return;     /* 开关/从机ID/IP字节/触发 */
+	}
 }
 
 /* 更新 ListView 某行的"当前值"列. */
@@ -906,9 +936,9 @@ static void create_controls(HWND hWnd)
 	col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
 	col.cx = 70;  col.pszText = (LPWSTR)L"地址";   col.iSubItem = 0;
 	ListView_InsertColumn(g_mb.hRegList, 0, &col);
-	col.cx = 140; col.pszText = (LPWSTR)L"名称";   col.iSubItem = 1;
+	col.cx = 160; col.pszText = (LPWSTR)L"名称";   col.iSubItem = 1;
 	ListView_InsertColumn(g_mb.hRegList, 1, &col);
-	col.cx = 330; col.pszText = (LPWSTR)L"当前值"; col.iSubItem = 2;
+	col.cx = 260; col.pszText = (LPWSTR)L"当前值"; col.iSubItem = 2;
 	ListView_InsertColumn(g_mb.hRegList, 2, &col);
 	col.cx = 80;  col.pszText = (LPWSTR)L"R/W";    col.iSubItem = 3;
 	ListView_InsertColumn(g_mb.hRegList, 3, &col);
