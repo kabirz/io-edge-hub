@@ -9,6 +9,7 @@
 #include <commctrl.h>
 #include <stdio.h>
 #include "app.h"
+#include "config_tab.h"
 #include "resource.h"
 
 #pragma comment(lib, "comctl32.lib")
@@ -116,12 +117,7 @@ static LRESULT CALLBACK main_wndproc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM 
 	return DefWindowProcW(hWnd, msg, wParam, lParam);
 }
 
-/* 临时空 tab 工厂 (后续 Task 6/7/9 替换为真实实现). */
-HWND ConfigTab_Create(HWND hParent, HINSTANCE hInst)
-{
-	return CreateWindowExW(0, L"STATIC", L"Tab1 占位 (UDP 参数配置)",
-		WS_CHILD | SS_CENTER, 0, 0, 0, 0, hParent, NULL, hInst, NULL);
-}
+/* 临时空 tab 工厂 (后续 Task 7/9 替换为真实实现). */
 HWND UpgradeTab_Create(HWND hParent, HINSTANCE hInst)
 {
 	return CreateWindowExW(0, L"STATIC", L"Tab2 占位 (固件升级)",
