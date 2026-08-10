@@ -105,12 +105,13 @@ static int collect_broadcast_addrs(unsigned long *addrs, int max_cnt)
  * 内部: 收发原语
  * ================================================================ */
 
-/* 发 cmd 到 ip:8600, 阻塞等回复 (1s), 校验回复首字节 == cmd.
+/* 发 cmd 到 ip:8600, 阻塞等回复 (timeout_ms), 校验回复首字节 == cmd.
  * req: 含 cmd 字节的完整请求. resp/out_resp_len: 回复 (含 echo cmd).
- * 返回 true=收到合法回复. */
+ * timeout_ms: 接收超时 (IOEDGE_UDP_TIMEOUT_MS=常规 1s; FW_START=5s 擦 flash;
+ *             FW_END=10s flush+读回重算 CRC). 返回 true=收到合法回复. */
 static bool send_recv(UdpManager *m, const char *ip, uint8_t cmd,
                       const uint8_t *req, int req_len,
-                      uint8_t *resp, int *out_resp_len)
+                      uint8_t *resp, int *out_resp_len, int timeout_ms)
 {
 	struct sockaddr_in dst = {0};
 	dst.sin_family = AF_INET;
@@ -127,8 +128,8 @@ static bool send_recv(UdpManager *m, const char *ip, uint8_t cmd,
 		return false;
 	}
 
-	/* 设置 1s 接收超时 */
-	DWORD tmo = IOEDGE_UDP_TIMEOUT_MS;
+	/* 设置接收超时 (按命令类型不同, 见注释) */
+	DWORD tmo = timeout_ms;
 	setsockopt(m->sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tmo, sizeof(tmo));
 
 	struct sockaddr_in from = {0};
@@ -203,7 +204,9 @@ bool UdpManager_FwStart(UdpManager *m, const char *ip, uint32_t img_size,
 	}
 	uint8_t resp[64];
 	int rn = 0;
-	if (!send_recv(m, ip, 0x01, req, reqlen, resp, &rn)) return false;
+	/* FW_START: 固件擦除整个 slot1 分区后才回 (512KB-1MB flash 擦除常超 1s),
+	 * 给 5s 超时 (与 handler-receiver 一致). */
+	if (!send_recv(m, ip, 0x01, req, reqlen, resp, &rn, 5000)) return false;
 	if (rn < 2) { sprintf(m->last_error, "FW_START 回复过短"); return false; }
 	if (out_status) *out_status = resp[1];
 	return true;
@@ -218,7 +221,7 @@ bool UdpManager_FwData(UdpManager *m, const char *ip, const uint8_t *data, int l
 	memcpy(req + 1, data, len);
 	uint8_t resp[64];
 	int rn = 0;
-	if (!send_recv(m, ip, 0x02, req, 1 + len, resp, &rn)) return false;
+	if (!send_recv(m, ip, 0x02, req, 1 + len, resp, &rn, IOEDGE_UDP_TIMEOUT_MS)) return false;
 	if (rn < 5) { sprintf(m->last_error, "FW_DATA 回复过短"); return false; }
 	if (out_offset) *out_offset = (uint32_t)resp[1] | ((uint32_t)resp[2] << 8) |
 	                              ((uint32_t)resp[3] << 16) | ((uint32_t)resp[4] << 24);
@@ -235,7 +238,9 @@ bool UdpManager_FwEnd(UdpManager *m, const char *ip, uint8_t test, uint16_t crc1
 	req[3] = (uint8_t)(crc16 >> 8);
 	uint8_t resp[64];
 	int rn = 0;
-	if (!send_recv(m, ip, 0x03, req, 4, resp, &rn)) return false;
+	/* FW_END: 固件 flush 写入后按 64B 块读回整个已写区域重算 CRC (满 slot 易
+	 * 1-3s), 给 10s 超时 (与 handler-receiver 一致). */
+	if (!send_recv(m, ip, 0x03, req, 4, resp, &rn, 10000)) return false;
 	if (rn < 2) { sprintf(m->last_error, "FW_END 回复过短"); return false; }
 	if (out_result) *out_result = resp[1];
 	return true;
@@ -252,7 +257,7 @@ bool UdpManager_SetIp(UdpManager *m, const char *ip, uint8_t ip4[4], uint8_t *ou
 	memcpy(req + 1, ip4, 4);
 	uint8_t resp[64];
 	int rn = 0;
-	if (!send_recv(m, ip, 0x10, req, 5, resp, &rn)) return false;
+	if (!send_recv(m, ip, 0x10, req, 5, resp, &rn, IOEDGE_UDP_TIMEOUT_MS)) return false;
 	if (out_ok) *out_ok = resp[1];
 	return true;
 }
@@ -263,7 +268,7 @@ bool UdpManager_GetNet(UdpManager *m, const char *ip, uint8_t ip4[4],
 	uint8_t req[1] = { 0x11 };
 	uint8_t resp[64];
 	int rn = 0;
-	if (!send_recv(m, ip, 0x11, req, 1, resp, &rn)) return false;
+	if (!send_recv(m, ip, 0x11, req, 1, resp, &rn, IOEDGE_UDP_TIMEOUT_MS)) return false;
 	/* 回 [0x11][ip 4B][slave 1B][tcp_port 2B BE] */
 	if (rn < 8) { sprintf(m->last_error, "GET_NET 回复过短"); return false; }
 	if (ip4)        memcpy(ip4, resp + 1, 4);
@@ -282,7 +287,7 @@ bool UdpManager_SetModbus(UdpManager *m, const char *ip, uint8_t slave_id,
 	req[3] = (uint8_t)(baud);
 	uint8_t resp[64];
 	int rn = 0;
-	if (!send_recv(m, ip, 0x12, req, 4, resp, &rn)) return false;
+	if (!send_recv(m, ip, 0x12, req, 4, resp, &rn, IOEDGE_UDP_TIMEOUT_MS)) return false;
 	if (out_ok) *out_ok = resp[1];
 	return true;
 }
@@ -293,7 +298,7 @@ bool UdpManager_GetModbus(UdpManager *m, const char *ip, uint8_t *out_slave,
 	uint8_t req[1] = { 0x13 };
 	uint8_t resp[64];
 	int rn = 0;
-	if (!send_recv(m, ip, 0x13, req, 1, resp, &rn)) return false;
+	if (!send_recv(m, ip, 0x13, req, 1, resp, &rn, IOEDGE_UDP_TIMEOUT_MS)) return false;
 	if (rn < 4) { sprintf(m->last_error, "GET_MODBUS 回复过短"); return false; }
 	if (out_slave) *out_slave = resp[1];
 	if (out_baud)  *out_baud  = ((uint16_t)resp[2] << 8) | resp[3]; /* BE16 */
@@ -311,7 +316,7 @@ bool UdpManager_SetCan(UdpManager *m, const char *ip, uint16_t can_id,
 	req[4] = (uint8_t)(baud_k);
 	uint8_t resp[64];
 	int rn = 0;
-	if (!send_recv(m, ip, 0x16, req, 5, resp, &rn)) return false;
+	if (!send_recv(m, ip, 0x16, req, 5, resp, &rn, IOEDGE_UDP_TIMEOUT_MS)) return false;
 	if (out_ok) *out_ok = resp[1];
 	return true;
 }
@@ -322,7 +327,7 @@ bool UdpManager_GetCan(UdpManager *m, const char *ip, uint16_t *out_can_id,
 	uint8_t req[1] = { 0x17 };
 	uint8_t resp[64];
 	int rn = 0;
-	if (!send_recv(m, ip, 0x17, req, 1, resp, &rn)) return false;
+	if (!send_recv(m, ip, 0x17, req, 1, resp, &rn, IOEDGE_UDP_TIMEOUT_MS)) return false;
 	if (rn < 5) { sprintf(m->last_error, "GET_CAN 回复过短"); return false; }
 	if (out_can_id) *out_can_id = ((uint16_t)resp[1] << 8) | resp[2];
 	if (out_baud_k) *out_baud_k = ((uint16_t)resp[3] << 8) | resp[4];
@@ -334,7 +339,7 @@ bool UdpManager_FactoryReset(UdpManager *m, const char *ip, uint8_t *out_ok)
 	uint8_t req[1] = { 0x19 };
 	uint8_t resp[64];
 	int rn = 0;
-	if (!send_recv(m, ip, 0x19, req, 1, resp, &rn)) return false;
+	if (!send_recv(m, ip, 0x19, req, 1, resp, &rn, IOEDGE_UDP_TIMEOUT_MS)) return false;
 	if (out_ok) *out_ok = resp[1];
 	return true;
 }
@@ -342,10 +347,14 @@ bool UdpManager_FactoryReset(UdpManager *m, const char *ip, uint8_t *out_ok)
 /* GET_VERSION (0x04): 回 [0x04][ASCII 版本串, 无 NUL] */
 bool UdpManager_GetVersion(UdpManager *m, const char *ip, char *out_ver, int out_cap)
 {
+	if (!out_ver || out_cap <= 0) {
+		sprintf(m->last_error, "invalid args");
+		return false;
+	}
 	uint8_t req[1] = { 0x04 };
 	uint8_t resp[64];
 	int rn = 0;
-	if (!send_recv(m, ip, 0x04, req, 1, resp, &rn)) return false;
+	if (!send_recv(m, ip, 0x04, req, 1, resp, &rn, IOEDGE_UDP_TIMEOUT_MS)) return false;
 	int vlen = rn - 1;
 	if (vlen <= 0) { sprintf(m->last_error, "GET_VERSION 空回复"); return false; }
 	if (vlen >= out_cap) vlen = out_cap - 1;
@@ -360,7 +369,7 @@ bool UdpManager_Reboot(UdpManager *m, const char *ip)
 	uint8_t req[1] = { 0x05 };
 	uint8_t resp[64];
 	int rn = 0;
-	send_recv(m, ip, 0x05, req, 1, resp, &rn);
+	send_recv(m, ip, 0x05, req, 1, resp, &rn, IOEDGE_UDP_TIMEOUT_MS);
 	return true;  /* reboot 不强求回复 */
 }
 
