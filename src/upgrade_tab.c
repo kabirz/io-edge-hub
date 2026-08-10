@@ -694,10 +694,24 @@ static LRESULT CALLBACK upg_wndproc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
 		/* 控件保持固定位置 (与 tab1 一致). */
 		return 0;
 	case WM_CTLCOLORDLG:
-	case WM_CTLCOLORSTATIC:
-		/* 静态控件透明背景 + 对话框 BTNFACE 底色 (视觉与父窗口一致). */
-		SetBkMode((HDC)wParam, TRANSPARENT);
+		/* 对话框底色 BTNFACE */
 		return (LRESULT)GetSysColorBrush(COLOR_BTNFACE);
+	case WM_CTLCOLORSTATIC: {
+		HDC hdc = (HDC)wParam;
+		HWND hCtrl = (HWND)lParam;
+		/* 只读多行日志 EDIT 不能用 TRANSPARENT (会残留旧文字), 用不透明背景.
+		 * 注: 只读 EDIT 也走 WM_CTLCOLORSTATIC. */
+		if (GetWindowLongPtrW(hCtrl, GWL_STYLE) & ES_READONLY) {
+			SetBkMode(hdc, OPAQUE);
+			SetTextColor(hdc, GetSysColor(COLOR_WINDOWTEXT));
+			SetBkColor(hdc, GetSysColor(COLOR_WINDOW));
+			return (LRESULT)GetSysColorBrush(COLOR_WINDOW);
+		}
+		/* 其他 STATIC: 透明 + BTNFACE 底色 (视觉与父窗口一致). */
+		SetBkMode(hdc, TRANSPARENT);
+		SetTextColor(hdc, GetSysColor(COLOR_WINDOWTEXT));
+		return (LRESULT)GetSysColorBrush(COLOR_BTNFACE);
+	}
 
 	/* ===== 自定义消息: worker → UI ===== */
 	case WM_APP_UPG_PROGRESS: {

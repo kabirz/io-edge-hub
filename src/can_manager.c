@@ -57,8 +57,8 @@ static bool can_write(CanManager *m, uint32_t id, const uint8_t *data, uint8_t d
 	TPCANMsg msg;
 	msg.id = id;
 	msg.msgtype = 0;   /* PCAN_MESSAGE_STANDARD (11-bit), 对齐 handler-receiver */
-	msg.len = dlc;
 	if (dlc > 8) dlc = 8;
+	msg.len = dlc;
 	memcpy(msg.data, data, dlc);
 
 	TPCANStatus st = Pcan_Write(m->channel, &msg);

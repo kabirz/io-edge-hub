@@ -971,7 +971,17 @@ static LRESULT CALLBACK mb_wndproc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
 		/* 对话框底色 BTNFACE */
 		return (LRESULT)GetSysColorBrush(COLOR_BTNFACE);
 	case WM_CTLCOLORSTATIC: {
+		HDC hdc = (HDC)wParam;
 		HWND hCtrl = (HWND)lParam;
+		/* 只读多行日志 EDIT 不能用 TRANSPARENT (会残留旧文字), 用不透明背景.
+		 * 注: 只读 EDIT 也走 WM_CTLCOLORSTATIC. 放在 DI-LED 着色之前: 日志 EDIT
+		 * 与 DI LED 控件 ID 不重叠, 两者互斥. */
+		if (GetWindowLongPtrW(hCtrl, GWL_STYLE) & ES_READONLY) {
+			SetBkMode(hdc, OPAQUE);
+			SetTextColor(hdc, GetSysColor(COLOR_WINDOWTEXT));
+			SetBkColor(hdc, GetSysColor(COLOR_WINDOW));
+			return (LRESULT)GetSysColorBrush(COLOR_WINDOW);
+		}
 		/* DI LED 着色: 控件 ID 在 3100..3115 范围.
 		 * 三态使用预创建画刷 (进程级单例, 不释放), 避免 WM_CTLCOLORSTATIC 高频
 		 * 调用导致的 GDI 句柄泄漏. */
@@ -982,7 +992,6 @@ static LRESULT CALLBACK mb_wndproc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
 			if (!brOff) brOff = CreateSolidBrush(RGB(128, 128, 128));
 			if (!brUnk) brUnk = CreateSolidBrush(RGB(200, 200, 200));
 			int idx = (int)(cid - IDC_MB_DI_BASE);
-			HDC hdc = (HDC)wParam;
 			SetBkMode(hdc, OPAQUE);
 			SetTextColor(hdc, RGB(255, 255, 255));
 			if (!g_mb.di_valid) {
@@ -997,7 +1006,8 @@ static LRESULT CALLBACK mb_wndproc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
 			}
 		}
 		/* 其他 STATIC: 透明 + BTNFACE 底色 */
-		SetBkMode((HDC)wParam, TRANSPARENT);
+		SetBkMode(hdc, TRANSPARENT);
+		SetTextColor(hdc, GetSysColor(COLOR_WINDOWTEXT));
 		return (LRESULT)GetSysColorBrush(COLOR_BTNFACE);
 	}
 	case WM_DESTROY:

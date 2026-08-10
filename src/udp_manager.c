@@ -413,7 +413,6 @@ static int discover_append_line(char *out, int out_cap, int *out_len,
 
 /* 处理一个 DISCOVER 回复包: 校验首字节, 提取 payload, 追加到 out. */
 static int discover_handle_reply(const uint8_t *buf, int n,
-                                 struct sockaddr_in *from,
                                  char *out, int out_cap, int *out_len)
 {
 	if (n <= 1 || buf[0] != 0x18) {
@@ -485,7 +484,7 @@ bool UdpManager_Discover(UdpManager *m, char *out, int out_cap, int *out_count)
 		int n = recvfrom(m->sock, (char *)buf, sizeof(buf), 0,
 		                 (struct sockaddr *)&from, &fl);
 		if (n > 0) {
-			cnt += discover_handle_reply(buf, n, &from, out, out_cap, &out_len);
+			cnt += discover_handle_reply(buf, n, out, out_cap, &out_len);
 		}
 
 		/* 8601 socket */
@@ -495,7 +494,7 @@ bool UdpManager_Discover(UdpManager *m, char *out, int out_cap, int *out_count)
 		n = recvfrom(s86, (char *)buf, sizeof(buf), 0,
 		             (struct sockaddr *)&from, &fl);
 		if (n > 0) {
-			cnt += discover_handle_reply(buf, n, &from, out, out_cap, &out_len);
+			cnt += discover_handle_reply(buf, n, out, out_cap, &out_len);
 		}
 	}
 

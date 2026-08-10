@@ -8,6 +8,7 @@
 #include <windows.h>
 #include <commctrl.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include "app.h"
 #include "config_tab.h"
 #include "upgrade_tab.h"
