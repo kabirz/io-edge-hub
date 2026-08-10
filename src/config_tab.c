@@ -462,14 +462,16 @@ static void on_factory_reset(void)
 	char ip[32];
 	current_target_ip(ip, sizeof(ip));
 	uint8_t ok = 0;
-	if (UdpManager_FactoryReset(g_cfg.udp, ip, &ok) && ok) {
-		log_append(L"出厂重置已执行, 设备将重启");
-		MessageBoxW(g_cfg.hSelf, L"出厂重置已执行, 设备将重启", L"完成",
-		            MB_ICONINFORMATION);
-	} else if (!ok) {
-		log_append(L"出厂重置被设备拒绝");
-		MessageBoxW(g_cfg.hSelf, L"设备拒绝出厂重置", L"警告",
-		            MB_ICONWARNING);
+	if (UdpManager_FactoryReset(g_cfg.udp, ip, &ok)) {
+		if (ok) {
+			log_append(L"出厂重置已执行, 设备将重启");
+			MessageBoxW(g_cfg.hSelf, L"出厂重置已执行, 设备将重启", L"完成",
+			            MB_ICONINFORMATION);
+		} else {
+			log_append(L"出厂重置被设备拒绝");
+			MessageBoxW(g_cfg.hSelf, L"设备拒绝出厂重置", L"警告",
+			            MB_ICONWARNING);
+		}
 	} else {
 		show_transport_error(L"FACTORY_RESET");
 	}
