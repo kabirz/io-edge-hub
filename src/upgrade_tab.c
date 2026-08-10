@@ -679,11 +679,11 @@ static void create_controls(HWND hWnd)
 	g_upg.hSelf = hWnd;
 	g_hFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
 
-	/* 行坐标基准: 按子窗口实际宽度动态计算, 左右各留 4px 边距
-	 * (右对齐按钮因此恒贴窗口右边框, 不会因窗口宽度变化而溢出) */
+	/* 行坐标基准: 按子窗口实际宽度动态计算, groupbox 左右各留 12px 边距
+	 * (保持美观的对称边框; 同时避免右对齐按钮因窗口宽度变化而溢出) */
 	RECT rc;
 	GetClientRect(hWnd, &rc);
-	int gx = 4, gw = rc.right - 8;
+	int gx = 12, gw = rc.right - 24;
 
 	/* ===== 升级通道 groupbox ===== */
 	create_groupbox(L"升级通道", gx, 4, gw, 100);
@@ -744,7 +744,7 @@ static void create_controls(HWND hWnd)
 		gx + 50, 172, 440, 22, hWnd, (HMENU)(INT_PTR)IDC_UPG_FILE, g_hInst, NULL);
 	SendMessageW(g_upg.hFile, WM_SETFONT, (WPARAM)g_hFont, TRUE);
 	g_upg.hBrowse = create_button(L"浏览...", gx + 498, 172, 70, 22, IDC_UPG_BROWSE);
-	g_upg.hFileInfo = create_label(L"(未选择)", gx + 576, 176, 200, 14);
+	g_upg.hFileInfo = create_label(L"(未选择)", gx + 576, 176, 176, 14);
 	/* 行2: 进度 + 状态 (左侧), 开始升级 + 重启 (右侧右对齐) */
 	create_label(L"进度:", gx + 12, 246, 36, 14);
 	g_upg.hProgress = CreateWindowExW(0, PROGRESS_CLASSW, L"",
