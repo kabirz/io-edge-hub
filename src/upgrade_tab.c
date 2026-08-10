@@ -520,8 +520,11 @@ static void on_start(void)
 		g_upg.cur_permanent = true;
 	}
 
-	/* 禁用开始, 启用取消, 重置进度条 */
+	/* 禁用开始/浏览, 启用取消, 重置进度条. 浏览须禁用: on_browse 会
+	 * free_image() 后重赋 g_upg.img, 升级期间 worker 正读 img, 误触将
+	 * use-after-free. */
 	EnableWindow(g_upg.hStart, FALSE);
+	EnableWindow(g_upg.hBrowse, FALSE);
 	EnableWindow(g_upg.hCancel, TRUE);
 	SendMessageW(g_upg.hProgress, PBM_SETPOS, 0, 0);
 	SetWindowTextW(g_upg.hStatus, L"升级中...");
@@ -534,6 +537,7 @@ static void on_start(void)
 	if (!h) {
 		MessageBoxW(g_upg.hSelf, L"创建升级线程失败", L"错误", MB_ICONERROR);
 		EnableWindow(g_upg.hStart, TRUE);
+		EnableWindow(g_upg.hBrowse, TRUE);
 		EnableWindow(g_upg.hCancel, FALSE);
 		return;
 	}
@@ -726,8 +730,9 @@ static LRESULT CALLBACK upg_wndproc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
 			CloseHandle(g_upg.thread);
 			g_upg.thread = NULL;
 		}
-		/* 恢复按钮 */
+		/* 恢复按钮 (与 on_start 的禁用对称: start/cancel + 浏览) */
 		EnableWindow(g_upg.hStart, g_upg.img ? TRUE : FALSE);
+		EnableWindow(g_upg.hBrowse, TRUE);
 		EnableWindow(g_upg.hCancel, FALSE);
 		if (success) {
 			SetWindowTextW(g_upg.hStatus, L"升级成功");
@@ -743,9 +748,23 @@ static LRESULT CALLBACK upg_wndproc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
 		/* 等 worker 退出 (UI 销毁时通常已 DONE; 防御性等待避免悬挂线程) */
 		if (g_upg.thread) {
 			InterlockedExchange(&g_upg.cancel, 1);
-			WaitForSingleObject(g_upg.thread, 2000);
-			CloseHandle(g_upg.thread);
-			g_upg.thread = NULL;
+			DWORD wres = WaitForSingleObject(g_upg.thread, 2000);
+			if (wres == WAIT_OBJECT_0) {
+				/* worker 已干净退出: 关闭句柄, 后续可安全销毁 manager/image */
+				CloseHandle(g_upg.thread);
+				g_upg.thread = NULL;
+			} else {
+				/* WAIT_TIMEOUT: worker 仍在阻塞 (典型为 CAN 升级的
+				 * CanManager_FirmwareUpgrade — 纯阻塞调用, 无法中断).
+				 * worker 仍在读 g_upg.img / 操作 g_upg.can, 此时若销毁
+				 * manager 或释放 image 将触发 use-after-free. 故仅关闭线程
+				 * 句柄 (让进程可退出), 跳过 manager/image 释放与 CAN 断开 —
+				 * 这是有意为之的有界泄漏: 资源在进程终止时由 OS 回收.
+				 * (泄漏永远安全; 释放另一线程正在用的内存永不安全.) */
+				CloseHandle(g_upg.thread);
+				g_upg.thread = NULL;
+				return 0;
+			}
 		}
 		if (g_upg.can_connected) {
 			CanManager_Disconnect(g_upg.can);
