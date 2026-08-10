@@ -176,24 +176,24 @@ static void create_controls(HWND hWnd)
 	create_label(L"设备列表:", gx + 116, 32, 64, 14);
 	g_cfg.hDevList = CreateWindowExW(0, L"COMBOBOX", L"",
 		WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP,
-		gx + 180, 28, 400, 220, hWnd, (HMENU)(INT_PTR)IDC_CFG_DEVLIST, g_hInst, NULL);
+		gx + 180, 28, 300, 220, hWnd, (HMENU)(INT_PTR)IDC_CFG_DEVLIST, g_hInst, NULL);
 	SendMessageW(g_cfg.hDevList, WM_SETFONT, (WPARAM)g_hFont, TRUE);
 	/* 行2: 目标设备 IP */
 	create_label(L"目标设备 IP:", gx + 12, 62, 90, 14);
 	int ip_ids[4] = { IDC_CFG_IP1, IDC_CFG_IP2, IDC_CFG_IP3, IDC_CFG_IP4 };
 	create_ip_row(gx + 104, 58, ip_ids, g_cfg.hIp);
-	/* 行3: 版本 + 查询 + 重启 */
+	/* 行3: 版本 + 查询 + 重启 (按钮右对齐) */
 	create_label(L"版本:", gx + 12, 92, 40, 14);
 	g_cfg.hVersion = create_label(L"(未查询)", gx + 54, 92, 280, 14);
-	create_button(L"查询版本", gx + 440, 88, 90, 24, IDC_CFG_GETVER);
-	create_button(L"重启", gx + 540, 88, 90, 24, IDC_CFG_REBOOT);
+	create_button(L"查询版本", gx + gw - 190, 88, 90, 24, IDC_CFG_GETVER);
+	create_button(L"重启", gx + gw - 90, 88, 90, 24, IDC_CFG_REBOOT);
 
 	/* ===== 网络参数 groupbox ===== */
 	create_groupbox(L"网络参数", gx, 130, gw, 50);
 	create_label(L"新 IP:", gx + 12, 154, 44, 14);
 	int nip_ids[4] = { IDC_CFG_NIP1, IDC_CFG_NIP2, IDC_CFG_NIP3, IDC_CFG_NIP4 };
 	create_ip_row(gx + 60, 150, nip_ids, g_cfg.hNip);
-	create_button(L"应用", gx + 240, 150, 80, 24, IDC_CFG_NIP_APPLY);
+	create_button(L"应用", gx + gw - 80, 150, 80, 24, IDC_CFG_NIP_APPLY);
 
 	/* ===== Modbus 参数 groupbox ===== */
 	create_groupbox(L"Modbus 参数", gx, 196, gw, 50);
@@ -210,8 +210,8 @@ static void create_controls(HWND hWnd)
 		SendMessageW(g_cfg.hMbBaud, CB_ADDSTRING, 0, (LPARAM)buf);
 	}
 	SendMessageW(g_cfg.hMbBaud, CB_SETCURSEL, 1, 0); /* 默认 9600 */
-	create_button(L"应用", gx + 300, 216, 70, 24, IDC_CFG_MB_APPLY);
-	create_button(L"读取", gx + 380, 216, 70, 24, IDC_CFG_MB_READ);
+	create_button(L"应用", gx + gw - 150, 216, 70, 24, IDC_CFG_MB_APPLY);
+	create_button(L"读取", gx + gw - 80, 216, 70, 24, IDC_CFG_MB_READ);
 
 	/* ===== CAN 参数 groupbox ===== */
 	create_groupbox(L"CAN 参数", gx, 262, gw, 50);
@@ -219,8 +219,8 @@ static void create_controls(HWND hWnd)
 	g_cfg.hCanId = create_edit(gx + 64, 282, 60, 22, IDC_CFG_CAN_ID, ES_NUMBER);
 	create_label(L"波特率(k):", gx + 140, 286, 64, 14);
 	g_cfg.hCanBaud = create_edit(gx + 204, 282, 60, 22, IDC_CFG_CAN_BAUD, ES_NUMBER);
-	create_button(L"应用", gx + 300, 282, 70, 24, IDC_CFG_CAN_APPLY);
-	create_button(L"读取", gx + 380, 282, 70, 24, IDC_CFG_CAN_READ);
+	create_button(L"应用", gx + gw - 150, 282, 70, 24, IDC_CFG_CAN_APPLY);
+	create_button(L"读取", gx + gw - 80, 282, 70, 24, IDC_CFG_CAN_READ);
 
 	/* ===== 出厂重置 (右对齐) ===== */
 	create_button(L"出厂重置", gx + gw - 110, 326, 100, 28, IDC_CFG_FACTORY);

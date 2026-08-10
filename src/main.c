@@ -73,6 +73,9 @@ static LRESULT CALLBACK main_wndproc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM 
 		g_hTab = CreateWindowExW(0, WC_TABCONTROLW, L"",
 			WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | TCS_TABS,
 			0, 0, 0, 0, hWnd, (HMENU)0, g_hInst, NULL);
+		/* tab 标题用常规 GUI 字体 (默认系统字体可能渲染为粗体) */
+		SendMessageW(g_hTab, WM_SETFONT,
+			(WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
 
 		TCITEMW it = { .mask = TCIF_TEXT };
 		it.pszText = (LPWSTR)L"参数设置";

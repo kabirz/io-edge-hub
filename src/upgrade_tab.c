@@ -47,7 +47,7 @@ typedef struct {
 	/* 文件 */
 	HWND hFile, hBrowse, hFileInfo;
 	/* 升级控制 */
-	HWND hStart, hCancel, hProgress, hStatus, hLog;
+	HWND hStart, hReboot, hProgress, hStatus, hLog;
 	/* manager */
 	UdpManager *udp;
 	CanManager *can;
@@ -581,12 +581,11 @@ static void on_start(void)
 		g_upg.cur_permanent = true;
 	}
 
-	/* 禁用开始/浏览, 启用取消, 重置进度条. 浏览须禁用: on_browse 会
+	/* 禁用开始/浏览, 重置进度条. 浏览须禁用: on_browse 会
 	 * free_image() 后重赋 g_upg.img, 升级期间 worker 正读 img, 误触将
 	 * use-after-free. */
 	EnableWindow(g_upg.hStart, FALSE);
 	EnableWindow(g_upg.hBrowse, FALSE);
-	EnableWindow(g_upg.hCancel, TRUE);
 	SendMessageW(g_upg.hProgress, PBM_SETPOS, 0, 0);
 	SetWindowTextW(g_upg.hStatus, L"升级中...");
 	InterlockedExchange(&g_upg.cancel, 0);
@@ -599,17 +598,50 @@ static void on_start(void)
 		MessageBoxW(g_upg.hSelf, L"创建升级线程失败", L"错误", MB_ICONERROR);
 		EnableWindow(g_upg.hStart, TRUE);
 		EnableWindow(g_upg.hBrowse, TRUE);
-		EnableWindow(g_upg.hCancel, FALSE);
 		return;
 	}
 	g_upg.thread = h;
 }
 
-static void on_cancel(void)
+/* 重启设备: UDP 通道走 UdpManager_Reboot (0x05), CAN 通道走 CanManager_Reboot. */
+static void on_reboot(void)
 {
-	InterlockedExchange(&g_upg.cancel, 1);
-	SetWindowTextW(g_upg.hStatus, L"正在取消...");
-	log_append_ptr(L"用户请求取消 (UDP 通道将在下个数据块生效; CAN 通道为阻塞调用, 取消需等当前操作返回)");
+	int can = current_channel();
+	bool ok;
+	if (!can) {
+		char ip[64] = {0};
+		read_ip_to_str(g_upg.hIp, ip, sizeof(ip));
+		bool ip_empty = false;
+		for (int i = 0; i < 4; i++) {
+			wchar_t buf[8];
+			if (GetWindowTextW(g_upg.hIp[i], buf, 8) == 0) { ip_empty = true; break; }
+		}
+		if (ip_empty) {
+			MessageBoxW(g_upg.hSelf, L"请先填写目标设备 IP", L"提示",
+			            MB_ICONWARNING);
+			return;
+		}
+		ok = UdpManager_Reboot(g_upg.udp, ip);
+		if (!ok) {
+			log_append_ptr(L"重启命令发送失败 (设备无响应)");
+		} else {
+			log_append_ptr(L"重启命令已发送");
+		}
+	} else {
+		if (!g_upg.can_connected) {
+			MessageBoxW(g_upg.hSelf, L"请先点 \"连接\" 接入 PCAN 设备", L"提示",
+			            MB_ICONWARNING);
+			return;
+		}
+		ok = CanManager_Reboot(g_upg.can);
+		if (!ok) {
+			wchar_t m[160];
+			swprintf(m, 160, L"重启失败: %hs", CanManager_GetLastError(g_upg.can));
+			log_append_ptr(m);
+		} else {
+			log_append_ptr(L"重启命令已发送");
+		}
+	}
 }
 
 /* ===== WM_COMMAND 分发 ===== */
@@ -634,7 +666,7 @@ static void on_command(WPARAM wParam)
 	case IDC_UPG_BROWSE:    on_browse(); break;
 	case IDC_UPG_GETVER:    on_query_version(); break;
 	case IDC_UPG_START:     on_start(); break;
-	case IDC_UPG_CANCEL:    on_cancel(); break;
+	case IDC_UPG_REBOOT:    on_reboot(); break;
 	case IDC_UPG_CAN_CONN:  on_can_connect(); break;
 	case IDC_UPG_CAN_REFRESH: refresh_can_device(); break;
 	}
@@ -687,8 +719,8 @@ static void create_controls(HWND hWnd)
 		SendMessageW(g_upg.hCanBaud, CB_ADDSTRING, 0, (LPARAM)g_bauds[i].label);
 	}
 	SendMessageW(g_upg.hCanBaud, CB_SETCURSEL, 0, 0); /* 默认 250k */
-	g_upg.hCanRefresh = create_button(L"刷新", gx + 382, 58, 60, 22, IDC_UPG_CAN_REFRESH);
-	g_upg.hCanConn = create_button(L"连接", gx + 448, 58, 60, 22, IDC_UPG_CAN_CONN);
+	g_upg.hCanRefresh = create_button(L"刷新", gx + gw - 130, 58, 60, 22, IDC_UPG_CAN_REFRESH);
+	g_upg.hCanConn = create_button(L"连接", gx + gw - 60, 58, 60, 22, IDC_UPG_CAN_CONN);
 
 	/* 默认 UDP, 隐藏 CAN 行 */
 	apply_channel_visibility();
@@ -699,7 +731,9 @@ static void create_controls(HWND hWnd)
 	g_upg.hGetVer = create_button(L"查询版本", gx + 446, 112, 80, 22, IDC_UPG_GETVER);
 
 	/* ===== 固件文件 groupbox ===== */
-	create_groupbox(L"固件文件", gx, 150, gw, 56);
+	/* ===== 固件升级 groupbox (固件文件 + 升级控制合并) ===== */
+	create_groupbox(L"固件升级", gx, 150, gw, 130);
+	/* 行1: 固件文件路径 + 浏览 + 文件信息 */
 	create_label(L"路径:", gx + 12, 176, 36, 14);
 	g_upg.hFile = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
 		WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | ES_READONLY,
@@ -707,20 +741,17 @@ static void create_controls(HWND hWnd)
 	SendMessageW(g_upg.hFile, WM_SETFONT, (WPARAM)g_hFont, TRUE);
 	g_upg.hBrowse = create_button(L"浏览...", gx + 498, 172, 70, 22, IDC_UPG_BROWSE);
 	g_upg.hFileInfo = create_label(L"(未选择)", gx + 576, 176, 200, 14);
-
-	/* ===== 升级控制 groupbox ===== */
-	create_groupbox(L"升级控制", gx, 222, gw, 64);
-	g_upg.hStart = create_button(L"开始升级", gx + 12, 248, 90, 26, IDC_UPG_START);
-	g_upg.hCancel = create_button(L"取消", gx + 110, 248, 70, 26, IDC_UPG_CANCEL);
-	EnableWindow(g_upg.hStart, FALSE);
-	EnableWindow(g_upg.hCancel, FALSE);
-	create_label(L"进度:", gx + 196, 252, 36, 14);
+	/* 行2: 进度 + 状态 (左侧), 开始升级 + 重启 (右侧右对齐) */
+	create_label(L"进度:", gx + 12, 246, 36, 14);
 	g_upg.hProgress = CreateWindowExW(0, PROGRESS_CLASSW, L"",
-		WS_CHILD | WS_VISIBLE, gx + 234, 250, 260, 18,
+		WS_CHILD | WS_VISIBLE, gx + 50, 244, 260, 18,
 		hWnd, (HMENU)(INT_PTR)IDC_UPG_PROGRESS, g_hInst, NULL);
 	SendMessageW(g_upg.hProgress, PBM_SETRANGE, 0, MAKELPARAM(0, 100));
 	SendMessageW(g_upg.hProgress, PBM_SETPOS, 0, 0);
-	g_upg.hStatus = create_label(L"就绪", gx + 502, 252, 270, 14);
+	g_upg.hStatus = create_label(L"就绪", gx + 318, 246, 300, 14);
+	g_upg.hStart = create_button(L"开始升级", gx + gw - 190, 242, 90, 26, IDC_UPG_START);
+	g_upg.hReboot = create_button(L"重启", gx + gw - 90, 242, 80, 26, IDC_UPG_REBOOT);
+	EnableWindow(g_upg.hStart, FALSE);
 
 	/* ===== 操作日志 groupbox + 多行只读 EDIT ===== */
 	create_groupbox(L"操作日志", gx, 300, gw, 468);
@@ -812,10 +843,9 @@ static LRESULT CALLBACK upg_wndproc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
 			CloseHandle(g_upg.thread);
 			g_upg.thread = NULL;
 		}
-		/* 恢复按钮 (与 on_start 的禁用对称: start/cancel + 浏览) */
+		/* 恢复按钮 (与 on_start 的禁用对称: start + 浏览) */
 		EnableWindow(g_upg.hStart, g_upg.img ? TRUE : FALSE);
 		EnableWindow(g_upg.hBrowse, TRUE);
-		EnableWindow(g_upg.hCancel, FALSE);
 		if (success) {
 			SetWindowTextW(g_upg.hStatus, L"升级成功");
 			MessageBoxW(g_hMain, L"升级成功", L"结果", MB_ICONINFORMATION);

@@ -256,21 +256,27 @@ static const wchar_t *rw_label(int rw)
 /* ===== 寄存器表 ListView 辅助 ===== */
 
 /* 把 holding/input 寄存器值格式化为显示串.
- * - input 0x01/0x02 (AI1/AI2 电流): /100.0 mA
- * - input 0x03/0x04 (AI3/AI4 电压): /100.0 V
- * - 其余: 十进制 */
+ * 格式: "0x%04X %016b" (十六进制 + 16 位逐位二进制), AI 通道末尾附工程单位.
+ * - input 0x01/0x02 (AI1/AI2 电流): + (%.2f mA)
+ * - input 0x03/0x04 (AI3/AI4 电压): + (%.2f V) */
 static void format_reg_value(int row_idx, uint16_t value, wchar_t *out, int cap)
 {
 	const RegMeta *r = &g_regs[row_idx];
+	wchar_t bin[17];
+	for (int i = 0; i < 16; i++) {
+		bin[i] = (value & (1u << (15 - i))) ? L'1' : L'0';
+	}
+	bin[16] = 0;
+
 	if (r->is_input) {
 		switch (r->addr) {
-		case 0x01: swprintf(out, cap, L"%u (%.2f mA)", value, value / 100.0); return;
-		case 0x02: swprintf(out, cap, L"%u (%.2f mA)", value, value / 100.0); return;
-		case 0x03: swprintf(out, cap, L"%u (%.2f V)",  value, value / 100.0); return;
-		case 0x04: swprintf(out, cap, L"%u (%.2f V)",  value, value / 100.0); return;
+		case 0x01: swprintf(out, cap, L"0x%04X %ls (%.2f mA)", value, bin, value / 100.0); return;
+		case 0x02: swprintf(out, cap, L"0x%04X %ls (%.2f mA)", value, bin, value / 100.0); return;
+		case 0x03: swprintf(out, cap, L"0x%04X %ls (%.2f V)",  value, bin, value / 100.0); return;
+		case 0x04: swprintf(out, cap, L"0x%04X %ls (%.2f V)",  value, bin, value / 100.0); return;
 		}
 	}
-	swprintf(out, cap, L"%u", value);
+	swprintf(out, cap, L"0x%04X %ls", value, bin);
 }
 
 /* 更新 ListView 某行的"当前值"列. */
@@ -900,9 +906,9 @@ static void create_controls(HWND hWnd)
 	col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
 	col.cx = 70;  col.pszText = (LPWSTR)L"地址";   col.iSubItem = 0;
 	ListView_InsertColumn(g_mb.hRegList, 0, &col);
-	col.cx = 150; col.pszText = (LPWSTR)L"名称";   col.iSubItem = 1;
+	col.cx = 140; col.pszText = (LPWSTR)L"名称";   col.iSubItem = 1;
 	ListView_InsertColumn(g_mb.hRegList, 1, &col);
-	col.cx = 200; col.pszText = (LPWSTR)L"当前值"; col.iSubItem = 2;
+	col.cx = 330; col.pszText = (LPWSTR)L"当前值"; col.iSubItem = 2;
 	ListView_InsertColumn(g_mb.hRegList, 2, &col);
 	col.cx = 80;  col.pszText = (LPWSTR)L"R/W";    col.iSubItem = 3;
 	ListView_InsertColumn(g_mb.hRegList, 3, &col);
