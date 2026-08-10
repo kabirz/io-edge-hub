@@ -720,8 +720,8 @@ static void create_controls(HWND hWnd)
 		SendMessageW(g_upg.hCanBaud, CB_ADDSTRING, 0, (LPARAM)g_bauds[i].label);
 	}
 	SendMessageW(g_upg.hCanBaud, CB_SETCURSEL, 0, 0); /* 默认 250k */
-	g_upg.hCanRefresh = create_button(L"刷新", gx + gw - 146, 58, 60, 22, IDC_UPG_CAN_REFRESH);
-	g_upg.hCanConn = create_button(L"连接", gx + gw - 76, 58, 60, 22, IDC_UPG_CAN_CONN);
+	g_upg.hCanRefresh = create_button(L"刷新", gx + gw - 180, 58, 80, 24, IDC_UPG_CAN_REFRESH);
+	g_upg.hCanConn = create_button(L"连接", gx + gw - 96, 58, 80, 24, IDC_UPG_CAN_CONN);
 
 	/* 默认 UDP, 隐藏 CAN 行 */
 	apply_channel_visibility();
@@ -729,7 +729,7 @@ static void create_controls(HWND hWnd)
 	/* ===== 版本信息行: label + 版本号 label + 查询按钮 ===== */
 	g_upg.hVerLbl = create_label(L"设备版本:", gx + 12, 116, 60, 14);
 	g_upg.hVersion = create_label(L"(未查询)", gx + 76, 114, 380, 14);
-	g_upg.hGetVer = create_button(L"查询版本", gx + 446, 112, 80, 22, IDC_UPG_GETVER);
+	g_upg.hGetVer = create_button(L"查询版本", gx + gw - 96, 112, 80, 24, IDC_UPG_GETVER);
 
 	/* ===== 固件文件 groupbox ===== */
 	/* ===== 固件升级 groupbox (固件文件 + 升级控制合并) ===== */
@@ -750,8 +750,8 @@ static void create_controls(HWND hWnd)
 	SendMessageW(g_upg.hProgress, PBM_SETRANGE, 0, MAKELPARAM(0, 100));
 	SendMessageW(g_upg.hProgress, PBM_SETPOS, 0, 0);
 	g_upg.hStatus = create_label(L"就绪", gx + 318, 246, 300, 14);
-	g_upg.hStart = create_button(L"开始升级", gx + gw - 206, 242, 90, 26, IDC_UPG_START);
-	g_upg.hReboot = create_button(L"重启", gx + gw - 106, 242, 80, 26, IDC_UPG_REBOOT);
+	g_upg.hStart = create_button(L"开始升级", gx + gw - 180, 242, 80, 24, IDC_UPG_START);
+	g_upg.hReboot = create_button(L"重启", gx + gw - 96, 242, 80, 24, IDC_UPG_REBOOT);
 	EnableWindow(g_upg.hStart, FALSE);
 
 	/* ===== 操作日志 groupbox + 多行只读 EDIT ===== */
