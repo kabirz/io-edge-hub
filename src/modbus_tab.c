@@ -762,7 +762,7 @@ static void create_controls(HWND hWnd)
 	g_mb.hSelf = hWnd;
 	g_hFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
 
-	int gx = 8, gw = 700;
+	int gx = 12, gw = 776;
 
 	/* ===== 连接 groupbox ===== */
 	create_groupbox(L"连接", gx, 4, gw, 90);
@@ -833,62 +833,62 @@ static void create_controls(HWND hWnd)
 	EnableWindow(g_mb.hRefreshAll, FALSE);
 
 	/* ===== DI 面板 groupbox ===== */
-	g_mb.hGbDi = create_groupbox(L"DI (16 路数字输入, 只读)", gx, 102, gw, 56);
-	/* 16 个 LED (STATIC): 每个 LED 宽 38, 高 14, 4 行 x 4 列布局太宽; 改单行 16 个 */
+	g_mb.hGbDi = create_groupbox(L"DI (16 路数字输入, 只读)", gx, 110, gw, 56);
+	/* 16 个 LED (STATIC): 单行 16 个, 均匀铺开 */
 	int di_x = gx + 12;
-	int di_y = 124;
+	int di_y = 132;
 	for (int i = 0; i < DI_COUNT; i++) {
 		wchar_t lbl[8];
 		swprintf(lbl, 8, L"%d", i + 1);
 		HWND hw = CreateWindowExW(0, L"STATIC", lbl,
 			WS_CHILD | WS_VISIBLE | SS_CENTER,
-			di_x + i * 42, di_y, 38, 22, hWnd,
+			di_x + i * 44, di_y, 40, 22, hWnd,
 			(HMENU)(INT_PTR)(IDC_MB_DI_BASE + i), g_hInst, NULL);
 		SendMessageW(hw, WM_SETFONT, (WPARAM)g_hFont, TRUE);
 		g_mb.hDi[i] = hw;
 	}
 
 	/* ===== DO 面板 groupbox ===== */
-	g_mb.hGbDo = create_groupbox(L"DO (8 路数字输出, 点击切换)", gx, 166, gw, 56);
+	g_mb.hGbDo = create_groupbox(L"DO (8 路数字输出, 点击切换)", gx, 182, gw, 56);
 	int do_x = gx + 12;
-	int do_y = 188;
+	int do_y = 204;
 	for (int i = 0; i < DO_COUNT; i++) {
 		wchar_t lbl[32];
 		swprintf(lbl, 32, L"DO%d ?", i + 1);
-		HWND hw = create_button(lbl, do_x + i * 84, do_y, 78, 24,
+		HWND hw = create_button(lbl, do_x + i * 88, do_y, 82, 24,
 		                        IDC_MB_DO_BASE + i);
 		g_mb.hDo[i] = hw;
 	}
 
 	/* ===== AI 面板 groupbox ===== */
-	g_mb.hGbAi = create_groupbox(L"AI (4 路模拟输入)", gx, 230, gw, 50);
+	g_mb.hGbAi = create_groupbox(L"AI (4 路模拟输入)", gx, 254, gw, 50);
 	int ai_x = gx + 12;
-	int ai_y = 252;
+	int ai_y = 276;
 	for (int i = 0; i < AI_COUNT; i++) {
-		HWND hw = create_label(L"--", ai_x + i * 160, ai_y, 150, 18);
+		HWND hw = create_label(L"--", ai_x + i * 180, ai_y, 170, 18);
 		g_mb.hAi[i] = hw;
 	}
 
 	/* ===== 寄存器表 groupbox ===== */
-	g_mb.hGbReg = create_groupbox(L"寄存器表 (双击写 RW, 选中后点查询读)", gx, 288, gw, 120);
+	g_mb.hGbReg = create_groupbox(L"寄存器表 (双击写 RW, 选中后点查询读)", gx, 312, gw, 260);
 	/* 刷新全部 + 自动刷新 (放在寄存器表上方) */
-	g_mb.hRefreshAll = create_button(L"刷新全部", gx + 12, 308, 80, 22, IDC_MB_REFRESH_ALL);
+	g_mb.hRefreshAll = create_button(L"刷新全部", gx + 12, 332, 80, 22, IDC_MB_REFRESH_ALL);
 	g_mb.hAutoRef = CreateWindowExW(0, L"BUTTON", L"自动刷新",
 		WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-		gx + 100, 308, 80, 22, hWnd, (HMENU)(INT_PTR)IDC_MB_AUTOREF, g_hInst, NULL);
+		gx + 100, 332, 80, 22, hWnd, (HMENU)(INT_PTR)IDC_MB_AUTOREF, g_hInst, NULL);
 	SendMessageW(g_mb.hAutoRef, WM_SETFONT, (WPARAM)g_hFont, TRUE);
-	g_mb.hAutoRefLbl = create_label(L"间隔(ms):", gx + 184, 312, 56, 14);
-	g_mb.hAutoRefInt = create_edit(gx + 240, 308, 60, 22, IDC_MB_AUTOREF_INT, ES_NUMBER);
+	g_mb.hAutoRefLbl = create_label(L"间隔(ms):", gx + 184, 336, 56, 14);
+	g_mb.hAutoRefInt = create_edit(gx + 240, 332, 60, 22, IDC_MB_AUTOREF_INT, ES_NUMBER);
 	SetWindowTextW(g_mb.hAutoRefInt, L"1000");
 	/* 查询选中 */
-	g_mb.hRegQuery = create_button(L"查询选中", gx + 320, 308, 80, 22, IDC_MB_REG_QUERY);
+	g_mb.hRegQuery = create_button(L"查询选中", gx + 320, 332, 80, 22, IDC_MB_REG_QUERY);
 	g_mb.hRegHint = create_label(L"(提示: 双击 RW 行可写入; WO 行写触发值; RO 行只读)",
-		gx + 408, 312, 290, 14);
+		gx + 408, 336, 300, 14);
 
 	/* ListView */
 	g_mb.hRegList = CreateWindowExW(0, WC_LISTVIEWW, L"",
 		WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | WS_BORDER,
-		gx + 12, 336, gw - 24, 66, hWnd,
+		gx + 12, 360, gw - 24, 200, hWnd,
 		(HMENU)(INT_PTR)IDC_MB_REG_LIST, g_hInst, NULL);
 	SendMessageW(g_mb.hRegList, WM_SETFONT, (WPARAM)g_hFont, TRUE);
 	ListView_SetExtendedListViewStyle(g_mb.hRegList,
@@ -925,11 +925,11 @@ static void create_controls(HWND hWnd)
 	}
 
 	/* ===== 操作日志 groupbox ===== */
-	create_groupbox(L"操作日志", gx, 414, gw, 100);
+	create_groupbox(L"操作日志", gx, 584, gw, 184);
 	g_mb.hLog = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
 		WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_READONLY |
 		ES_AUTOVSCROLL | WS_VSCROLL,
-		gx + 12, 434, gw - 24, 76,
+		gx + 12, 604, gw - 24, 156,
 		hWnd, (HMENU)(INT_PTR)IDC_MB_LOG, g_hInst, NULL);
 	SendMessageW(g_mb.hLog, WM_SETFONT, (WPARAM)g_hFont, TRUE);
 }

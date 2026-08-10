@@ -40,8 +40,8 @@ typedef struct {
 	HWND hChanUdp, hChanCan;
 	/* UDP 行: 目标 IP 4 段 + 测试复选框 + 标签 */
 	HWND hUdpLbl, hIp[4], hTest;
-	/* CAN 行: 设备下拉 + 波特率下拉 + 连接按钮 + 状态 */
-	HWND hCanLbl1, hCanDev, hCanLbl2, hCanBaud, hCanConn, hCanStatus;
+	/* CAN 行: 设备下拉 + 波特率下拉 + 刷新按钮 + 连接按钮 */
+	HWND hCanLbl1, hCanDev, hCanLbl2, hCanBaud, hCanRefresh, hCanConn;
 	/* 版本信息行: label + 查询按钮 */
 	HWND hVerLbl, hVersion, hGetVer;
 	/* 文件 */
@@ -155,12 +155,12 @@ static void apply_channel_visibility(void)
 	for (int i = 0; i < 4; i++) ShowWindow(g_upg.hIp[i], can ? SW_HIDE : SW_SHOW);
 	ShowWindow(g_upg.hTest, can ? SW_HIDE : SW_SHOW);
 	/* CAN 行 */
-	ShowWindow(g_upg.hCanLbl1,  can ? SW_SHOW : SW_HIDE);
-	ShowWindow(g_upg.hCanDev,   can ? SW_SHOW : SW_HIDE);
-	ShowWindow(g_upg.hCanLbl2,  can ? SW_SHOW : SW_HIDE);
-	ShowWindow(g_upg.hCanBaud,  can ? SW_SHOW : SW_HIDE);
-	ShowWindow(g_upg.hCanConn,  can ? SW_SHOW : SW_HIDE);
-	ShowWindow(g_upg.hCanStatus, can ? SW_SHOW : SW_HIDE);
+	ShowWindow(g_upg.hCanLbl1,   can ? SW_SHOW : SW_HIDE);
+	ShowWindow(g_upg.hCanDev,    can ? SW_SHOW : SW_HIDE);
+	ShowWindow(g_upg.hCanLbl2,   can ? SW_SHOW : SW_HIDE);
+	ShowWindow(g_upg.hCanBaud,   can ? SW_SHOW : SW_HIDE);
+	ShowWindow(g_upg.hCanRefresh, can ? SW_SHOW : SW_HIDE);
+	ShowWindow(g_upg.hCanConn,   can ? SW_SHOW : SW_HIDE);
 }
 
 /* UI 线程: 设置 fileinfo 静态文本 (默认黑色). */
@@ -377,11 +377,11 @@ static void refresh_can_device(void)
 		SendMessageW(g_upg.hCanDev, CB_ADDSTRING, 0, (LPARAM)buf);
 		SendMessageW(g_upg.hCanDev, CB_SETITEMDATA, 0, (LPARAM)ch);
 		SendMessageW(g_upg.hCanDev, CB_SETCURSEL, 0, 0);
-		SetWindowTextW(g_upg.hCanStatus, L"已检测到设备 (未连接)");
+		log_append_ptr(L"已刷新: 检测到 PCAN-USB 设备");
 	} else {
 		SendMessageW(g_upg.hCanDev, CB_ADDSTRING, 0, (LPARAM)L"(未检测到 PCAN-USB)");
 		SendMessageW(g_upg.hCanDev, CB_SETCURSEL, 0, 0);
-		SetWindowTextW(g_upg.hCanStatus, L"未检测到 PCAN-USB 设备");
+		log_append_ptr(L"已刷新: 未检测到 PCAN-USB 设备");
 	}
 }
 
@@ -393,9 +393,9 @@ static void on_can_connect(void)
 		g_upg.can_connected = false;
 		g_upg.can_channel = -1;
 		SetWindowTextW(g_upg.hCanConn, L"连接");
-		SetWindowTextW(g_upg.hCanStatus, L"已断开");
 		EnableWindow(g_upg.hCanDev, TRUE);
 		EnableWindow(g_upg.hCanBaud, TRUE);
+		log_append_ptr(L"PCAN 已断开");
 		return;
 	}
 	int sel = (int)SendMessageW(g_upg.hCanDev, CB_GETCURSEL, 0, 0);
@@ -411,16 +411,13 @@ static void on_can_connect(void)
 	if (!CanManager_Connect(g_upg.can, channel, bitrate)) {
 		wchar_t m[256];
 		swprintf(m, 256, L"PCAN 连接失败: %hs", CanManager_GetLastError(g_upg.can));
-		SetWindowTextW(g_upg.hCanStatus, m);
 		MessageBoxW(g_upg.hSelf, m, L"连接失败", MB_ICONERROR);
 		return;
 	}
 	g_upg.can_connected = true;
 	g_upg.can_channel = channel;
 	SetWindowTextW(g_upg.hCanConn, L"断开");
-	wchar_t m[64];
-	swprintf(m, 64, L"已连接 (通道 %d)", channel);
-	SetWindowTextW(g_upg.hCanStatus, m);
+	log_append_ptr(L"PCAN 已连接, 查询设备版本...");
 	EnableWindow(g_upg.hCanDev, FALSE);
 	EnableWindow(g_upg.hCanBaud, FALSE);
 	/* 连接成功后自动查询一次设备版本 */
@@ -639,6 +636,7 @@ static void on_command(WPARAM wParam)
 	case IDC_UPG_START:     on_start(); break;
 	case IDC_UPG_CANCEL:    on_cancel(); break;
 	case IDC_UPG_CAN_CONN:  on_can_connect(); break;
+	case IDC_UPG_CAN_REFRESH: refresh_can_device(); break;
 	}
 }
 
@@ -649,7 +647,7 @@ static void create_controls(HWND hWnd)
 	g_upg.hSelf = hWnd;
 	g_hFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
 
-	int gx = 8, gw = 700;
+	int gx = 12, gw = 776;
 
 	/* ===== 升级通道 groupbox ===== */
 	create_groupbox(L"升级通道", gx, 4, gw, 100);
@@ -674,7 +672,7 @@ static void create_controls(HWND hWnd)
 		gx + 260, 58, 180, 22, hWnd, (HMENU)(INT_PTR)IDC_UPG_TEST, g_hInst, NULL);
 	SendMessageW(g_upg.hTest, WM_SETFONT, (WPARAM)g_hFont, TRUE);
 
-	/* 行2 (重叠位置, 默认隐藏): CAN PCAN 设备 + 波特率 + 连接 + 状态 */
+	/* 行2 (重叠位置, 默认隐藏): CAN PCAN 设备 + 波特率 + 刷新 + 连接 */
 	g_upg.hCanLbl1 = create_label(L"PCAN 设备:", gx + 12, 62, 64, 14);
 	g_upg.hCanDev = CreateWindowExW(0, L"COMBOBOX", L"",
 		WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
@@ -689,50 +687,47 @@ static void create_controls(HWND hWnd)
 		SendMessageW(g_upg.hCanBaud, CB_ADDSTRING, 0, (LPARAM)g_bauds[i].label);
 	}
 	SendMessageW(g_upg.hCanBaud, CB_SETCURSEL, 0, 0); /* 默认 250k */
-	g_upg.hCanConn = create_button(L"连接", gx + 382, 58, 60, 22, IDC_UPG_CAN_CONN);
-	g_upg.hCanStatus = create_label(L"(未检测)", gx + 448, 62, 240, 14);
+	g_upg.hCanRefresh = create_button(L"刷新", gx + 382, 58, 60, 22, IDC_UPG_CAN_REFRESH);
+	g_upg.hCanConn = create_button(L"连接", gx + 448, 58, 60, 22, IDC_UPG_CAN_CONN);
 
 	/* 默认 UDP, 隐藏 CAN 行 */
 	apply_channel_visibility();
 
-	/* ===== 版本信息行: label + 版本号静态 + 查询按钮 ===== */
-	g_upg.hVerLbl = create_label(L"设备版本:", gx + 12, 112, 60, 14);
-	g_upg.hVersion = CreateWindowExW(WS_EX_CLIENTEDGE, L"STATIC", L"(未查询)",
-		WS_CHILD | WS_VISIBLE | SS_LEFT,
-		gx + 76, 110, 360, 18, hWnd, (HMENU)(INT_PTR)IDC_UPG_VERSION, g_hInst, NULL);
-	SendMessageW(g_upg.hVersion, WM_SETFONT, (WPARAM)g_hFont, TRUE);
-	g_upg.hGetVer = create_button(L"查询版本", gx + 446, 108, 80, 22, IDC_UPG_GETVER);
+	/* ===== 版本信息行: label + 版本号 label + 查询按钮 ===== */
+	g_upg.hVerLbl = create_label(L"设备版本:", gx + 12, 116, 60, 14);
+	g_upg.hVersion = create_label(L"(未查询)", gx + 76, 114, 380, 14);
+	g_upg.hGetVer = create_button(L"查询版本", gx + 446, 112, 80, 22, IDC_UPG_GETVER);
 
 	/* ===== 固件文件 groupbox ===== */
-	create_groupbox(L"固件文件", gx, 146, gw, 56);
-	create_label(L"路径:", gx + 12, 172, 36, 14);
+	create_groupbox(L"固件文件", gx, 150, gw, 56);
+	create_label(L"路径:", gx + 12, 176, 36, 14);
 	g_upg.hFile = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
 		WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | ES_READONLY,
-		gx + 50, 168, 380, 22, hWnd, (HMENU)(INT_PTR)IDC_UPG_FILE, g_hInst, NULL);
+		gx + 50, 172, 440, 22, hWnd, (HMENU)(INT_PTR)IDC_UPG_FILE, g_hInst, NULL);
 	SendMessageW(g_upg.hFile, WM_SETFONT, (WPARAM)g_hFont, TRUE);
-	g_upg.hBrowse = create_button(L"浏览...", gx + 438, 168, 70, 22, IDC_UPG_BROWSE);
-	g_upg.hFileInfo = create_label(L"(未选择)", gx + 516, 172, 180, 14);
+	g_upg.hBrowse = create_button(L"浏览...", gx + 498, 172, 70, 22, IDC_UPG_BROWSE);
+	g_upg.hFileInfo = create_label(L"(未选择)", gx + 576, 176, 200, 14);
 
 	/* ===== 升级控制 groupbox ===== */
-	create_groupbox(L"升级控制", gx, 210, gw, 64);
-	g_upg.hStart = create_button(L"开始升级", gx + 12, 236, 90, 26, IDC_UPG_START);
-	g_upg.hCancel = create_button(L"取消", gx + 110, 236, 70, 26, IDC_UPG_CANCEL);
+	create_groupbox(L"升级控制", gx, 222, gw, 64);
+	g_upg.hStart = create_button(L"开始升级", gx + 12, 248, 90, 26, IDC_UPG_START);
+	g_upg.hCancel = create_button(L"取消", gx + 110, 248, 70, 26, IDC_UPG_CANCEL);
 	EnableWindow(g_upg.hStart, FALSE);
 	EnableWindow(g_upg.hCancel, FALSE);
-	create_label(L"进度:", gx + 196, 240, 36, 14);
+	create_label(L"进度:", gx + 196, 252, 36, 14);
 	g_upg.hProgress = CreateWindowExW(0, PROGRESS_CLASSW, L"",
-		WS_CHILD | WS_VISIBLE, gx + 234, 238, 200, 18,
+		WS_CHILD | WS_VISIBLE, gx + 234, 250, 260, 18,
 		hWnd, (HMENU)(INT_PTR)IDC_UPG_PROGRESS, g_hInst, NULL);
 	SendMessageW(g_upg.hProgress, PBM_SETRANGE, 0, MAKELPARAM(0, 100));
 	SendMessageW(g_upg.hProgress, PBM_SETPOS, 0, 0);
-	g_upg.hStatus = create_label(L"就绪", gx + 442, 240, 250, 14);
+	g_upg.hStatus = create_label(L"就绪", gx + 502, 252, 270, 14);
 
 	/* ===== 操作日志 groupbox + 多行只读 EDIT ===== */
-	create_groupbox(L"操作日志", gx, 282, gw, 216);
+	create_groupbox(L"操作日志", gx, 300, gw, 468);
 	g_upg.hLog = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
 		WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_READONLY |
 		ES_AUTOVSCROLL | WS_VSCROLL,
-		gx + 12, 302, gw - 24, 188,
+		gx + 12, 320, gw - 24, 440,
 		hWnd, (HMENU)(INT_PTR)IDC_UPG_LOG, g_hInst, NULL);
 	SendMessageW(g_upg.hLog, WM_SETFONT, (WPARAM)g_hFont, TRUE);
 

@@ -167,7 +167,7 @@ static void create_controls(HWND hWnd)
 	g_hFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
 
 	/* 行坐标基准 */
-	int gx = 8, gw = 700;
+	int gx = 12, gw = 776;
 
 	/* ===== 设备发现 groupbox ===== */
 	create_groupbox(L"设备发现", gx, 4, gw, 112);
@@ -176,7 +176,7 @@ static void create_controls(HWND hWnd)
 	create_label(L"设备列表:", gx + 116, 32, 64, 14);
 	g_cfg.hDevList = CreateWindowExW(0, L"COMBOBOX", L"",
 		WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP,
-		gx + 180, 28, 300, 220, hWnd, (HMENU)(INT_PTR)IDC_CFG_DEVLIST, g_hInst, NULL);
+		gx + 180, 28, 400, 220, hWnd, (HMENU)(INT_PTR)IDC_CFG_DEVLIST, g_hInst, NULL);
 	SendMessageW(g_cfg.hDevList, WM_SETFONT, (WPARAM)g_hFont, TRUE);
 	/* 行2: 目标设备 IP */
 	create_label(L"目标设备 IP:", gx + 12, 62, 90, 14);
@@ -189,20 +189,20 @@ static void create_controls(HWND hWnd)
 	create_button(L"重启", gx + 540, 88, 90, 24, IDC_CFG_REBOOT);
 
 	/* ===== 网络参数 groupbox ===== */
-	create_groupbox(L"网络参数", gx, 124, gw, 50);
-	create_label(L"新 IP:", gx + 12, 148, 44, 14);
+	create_groupbox(L"网络参数", gx, 130, gw, 50);
+	create_label(L"新 IP:", gx + 12, 154, 44, 14);
 	int nip_ids[4] = { IDC_CFG_NIP1, IDC_CFG_NIP2, IDC_CFG_NIP3, IDC_CFG_NIP4 };
-	create_ip_row(gx + 60, 144, nip_ids, g_cfg.hNip);
-	create_button(L"应用", gx + 240, 144, 80, 24, IDC_CFG_NIP_APPLY);
+	create_ip_row(gx + 60, 150, nip_ids, g_cfg.hNip);
+	create_button(L"应用", gx + 240, 150, 80, 24, IDC_CFG_NIP_APPLY);
 
 	/* ===== Modbus 参数 groupbox ===== */
-	create_groupbox(L"Modbus 参数", gx, 182, gw, 50);
-	create_label(L"从机地址:", gx + 12, 206, 64, 14);
-	g_cfg.hMbSlave = create_edit(gx + 76, 202, 50, 22, IDC_CFG_MB_SLAVE, ES_NUMBER);
-	create_label(L"波特率:", gx + 140, 206, 48, 14);
+	create_groupbox(L"Modbus 参数", gx, 196, gw, 50);
+	create_label(L"从机地址:", gx + 12, 220, 64, 14);
+	g_cfg.hMbSlave = create_edit(gx + 76, 216, 50, 22, IDC_CFG_MB_SLAVE, ES_NUMBER);
+	create_label(L"波特率:", gx + 140, 220, 48, 14);
 	g_cfg.hMbBaud = CreateWindowExW(0, L"COMBOBOX", L"",
 		WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP,
-		gx + 188, 202, 100, 220, hWnd, (HMENU)(INT_PTR)IDC_CFG_MB_BAUD, g_hInst, NULL);
+		gx + 188, 216, 100, 220, hWnd, (HMENU)(INT_PTR)IDC_CFG_MB_BAUD, g_hInst, NULL);
 	SendMessageW(g_cfg.hMbBaud, WM_SETFONT, (WPARAM)g_hFont, TRUE);
 	for (int i = 0; i < BAUD_COUNT; i++) {
 		wchar_t buf[16];
@@ -210,27 +210,27 @@ static void create_controls(HWND hWnd)
 		SendMessageW(g_cfg.hMbBaud, CB_ADDSTRING, 0, (LPARAM)buf);
 	}
 	SendMessageW(g_cfg.hMbBaud, CB_SETCURSEL, 1, 0); /* 默认 9600 */
-	create_button(L"应用", gx + 300, 202, 70, 24, IDC_CFG_MB_APPLY);
-	create_button(L"读取", gx + 380, 202, 70, 24, IDC_CFG_MB_READ);
+	create_button(L"应用", gx + 300, 216, 70, 24, IDC_CFG_MB_APPLY);
+	create_button(L"读取", gx + 380, 216, 70, 24, IDC_CFG_MB_READ);
 
 	/* ===== CAN 参数 groupbox ===== */
-	create_groupbox(L"CAN 参数", gx, 240, gw, 50);
-	create_label(L"CAN ID:", gx + 12, 264, 48, 14);
-	g_cfg.hCanId = create_edit(gx + 64, 260, 60, 22, IDC_CFG_CAN_ID, ES_NUMBER);
-	create_label(L"波特率(k):", gx + 140, 264, 64, 14);
-	g_cfg.hCanBaud = create_edit(gx + 204, 260, 60, 22, IDC_CFG_CAN_BAUD, ES_NUMBER);
-	create_button(L"应用", gx + 300, 260, 70, 24, IDC_CFG_CAN_APPLY);
-	create_button(L"读取", gx + 380, 260, 70, 24, IDC_CFG_CAN_READ);
+	create_groupbox(L"CAN 参数", gx, 262, gw, 50);
+	create_label(L"CAN ID:", gx + 12, 286, 48, 14);
+	g_cfg.hCanId = create_edit(gx + 64, 282, 60, 22, IDC_CFG_CAN_ID, ES_NUMBER);
+	create_label(L"波特率(k):", gx + 140, 286, 64, 14);
+	g_cfg.hCanBaud = create_edit(gx + 204, 282, 60, 22, IDC_CFG_CAN_BAUD, ES_NUMBER);
+	create_button(L"应用", gx + 300, 282, 70, 24, IDC_CFG_CAN_APPLY);
+	create_button(L"读取", gx + 380, 282, 70, 24, IDC_CFG_CAN_READ);
 
 	/* ===== 出厂重置 (右对齐) ===== */
-	create_button(L"出厂重置", gx + gw - 110, 300, 100, 28, IDC_CFG_FACTORY);
+	create_button(L"出厂重置", gx + gw - 110, 326, 100, 28, IDC_CFG_FACTORY);
 
 	/* ===== 操作日志 groupbox + 多行只读 EDIT ===== */
-	create_groupbox(L"操作日志", gx, 338, gw, 160);
+	create_groupbox(L"操作日志", gx, 366, gw, 396);
 	g_cfg.hLog = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
 		WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_READONLY |
 		ES_AUTOVSCROLL | WS_VSCROLL,
-		gx + 12, 358, gw - 24, 132,
+		gx + 12, 386, gw - 24, 368,
 		hWnd, (HMENU)(INT_PTR)IDC_CFG_LOG, g_hInst, NULL);
 	SendMessageW(g_cfg.hLog, WM_SETFONT, (WPARAM)g_hFont, TRUE);
 }

@@ -109,8 +109,8 @@ static LRESULT CALLBACK main_wndproc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM 
 		return 0;
 	case WM_GETMINMAXINFO: {
 		MINMAXINFO *mmi = (MINMAXINFO *)lParam;
-		mmi->ptMinTrackSize.x = 720;
-		mmi->ptMinTrackSize.y = 560;
+		mmi->ptMinTrackSize.x = 800;
+		mmi->ptMinTrackSize.y = 840;
 		return 0;
 	}
 	case WM_DESTROY:
@@ -142,7 +142,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, PWSTR cmdLine, int sho
 
 	g_hMain = CreateWindowExW(0, wc.lpszClassName, L"数据采集卡软件 v" APP_VERSION_W,
 		WS_OVERLAPPEDWINDOW & ~WS_THICKFRAME & ~WS_MAXIMIZEBOX,
-		CW_USEDEFAULT, CW_USEDEFAULT, 720, 560,
+		CW_USEDEFAULT, CW_USEDEFAULT, 800, 840,
 		NULL, NULL, hInstance, NULL);
 	ShowWindow(g_hMain, show);
 	UpdateWindow(g_hMain);
