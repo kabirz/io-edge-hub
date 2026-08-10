@@ -52,6 +52,7 @@ typedef struct {
 	UdpManager *udp;
 	CanManager *can;
 	bool can_connected;
+	bool can_detected;
 	int  can_channel;
 	/* image 缓冲 (浏览时加载, 升级时消费, 切换文件/退出时释放) */
 	uint8_t *img;
@@ -146,6 +147,31 @@ static int current_channel(void)
 	return (SendMessageW(g_upg.hChanCan, BM_GETCHECK, 0, 0) == BST_CHECKED) ? 1 : 0;
 }
 
+/* 按 CAN 设备检测/连接状态刷新按钮可用性.
+ * - CAN 通道且未检测到设备: 连接/查询版本/重启 全禁用
+ * - CAN 通道且已检测到但未连接: 仅连接可点
+ * - CAN 通道且已连接: 连接(变断开)/查询版本/重启 均可点
+ * - UDP 通道: 恢复默认可用 (UDP 无连接概念, 直接走目标 IP) */
+static void update_can_buttons(void)
+{
+	int can = current_channel();
+	if (!can) {
+		EnableWindow(g_upg.hCanConn, TRUE);
+		EnableWindow(g_upg.hGetVer, TRUE);
+		EnableWindow(g_upg.hReboot, TRUE);
+		return;
+	}
+	if (!g_upg.can_detected) {
+		EnableWindow(g_upg.hCanConn, FALSE);
+		EnableWindow(g_upg.hGetVer, FALSE);
+		EnableWindow(g_upg.hReboot, FALSE);
+		return;
+	}
+	EnableWindow(g_upg.hCanConn, TRUE);
+	EnableWindow(g_upg.hGetVer, g_upg.can_connected);
+	EnableWindow(g_upg.hReboot, g_upg.can_connected);
+}
+
 /* 切换通道: 显示/隐藏 UDP 与 CAN 子区域. */
 static void apply_channel_visibility(void)
 {
@@ -161,6 +187,7 @@ static void apply_channel_visibility(void)
 	ShowWindow(g_upg.hCanBaud,   can ? SW_SHOW : SW_HIDE);
 	ShowWindow(g_upg.hCanRefresh, can ? SW_SHOW : SW_HIDE);
 	ShowWindow(g_upg.hCanConn,   can ? SW_SHOW : SW_HIDE);
+	update_can_buttons();
 }
 
 /* UI 线程: 设置 fileinfo 静态文本 (默认黑色). */
@@ -366,7 +393,8 @@ static void on_query_version(void)
 
 /* ===== CAN 连接 (UI 线程) ===== */
 
-/* 刷新 PCAN 设备下拉: 调 DetectDevice 探测首个 PCAN-USB 通道. */
+/* 刷新 PCAN 设备下拉: 调 DetectDevice 探测首个 PCAN-USB 通道.
+ * 更新 can_detected 标志并刷新按钮可用性. */
 static void refresh_can_device(void)
 {
 	SendMessageW(g_upg.hCanDev, CB_RESETCONTENT, 0, 0);
@@ -377,12 +405,15 @@ static void refresh_can_device(void)
 		SendMessageW(g_upg.hCanDev, CB_ADDSTRING, 0, (LPARAM)buf);
 		SendMessageW(g_upg.hCanDev, CB_SETITEMDATA, 0, (LPARAM)ch);
 		SendMessageW(g_upg.hCanDev, CB_SETCURSEL, 0, 0);
+		g_upg.can_detected = true;
 		log_append_ptr(L"已刷新: 检测到 PCAN-USB 设备");
 	} else {
 		SendMessageW(g_upg.hCanDev, CB_ADDSTRING, 0, (LPARAM)L"(未检测到 PCAN-USB)");
 		SendMessageW(g_upg.hCanDev, CB_SETCURSEL, 0, 0);
+		g_upg.can_detected = false;
 		log_append_ptr(L"已刷新: 未检测到 PCAN-USB 设备");
 	}
+	update_can_buttons();
 }
 
 /* 连接/断开 PCAN. 切换按钮文字 + 状态. */
@@ -396,6 +427,7 @@ static void on_can_connect(void)
 		EnableWindow(g_upg.hCanDev, TRUE);
 		EnableWindow(g_upg.hCanBaud, TRUE);
 		log_append_ptr(L"PCAN 已断开");
+		update_can_buttons();
 		return;
 	}
 	int sel = (int)SendMessageW(g_upg.hCanDev, CB_GETCURSEL, 0, 0);
@@ -420,7 +452,8 @@ static void on_can_connect(void)
 	log_append_ptr(L"PCAN 已连接, 查询设备版本...");
 	EnableWindow(g_upg.hCanDev, FALSE);
 	EnableWindow(g_upg.hCanBaud, FALSE);
-	/* 连接成功后自动查询一次设备版本 */
+	/* 连接成功后启用查询版本/重启, 并自动查询一次设备版本 */
+	update_can_buttons();
 	on_query_version();
 }
 

@@ -25,9 +25,11 @@
 /* ===== 静态状态: 所有控件 HWND + UdpManager 实例 ===== */
 typedef struct {
 	HWND hSelf;
+	HWND hConn;
 	HWND hDevList, hIp[4], hNip[4], hVersion, hMbSlave, hMbBaud;
 	HWND hCanId, hCanBaud, hLog;
 	UdpManager *udp;
+	bool udp_connected;   /* UDP 连接状态 (连接后启用查询/设置) */
 } ConfigTab;
 
 static ConfigTab g_cfg;
@@ -171,12 +173,13 @@ static void create_controls(HWND hWnd)
 
 	/* ===== 设备发现 groupbox ===== */
 	create_groupbox(L"设备发现", gx, 4, gw, 112);
-	/* 行1: 发现按钮 + 设备下拉 */
+	/* 行1: 发现按钮 + 连接按钮 + 设备下拉 */
 	create_button(L"发现设备", gx + 12, 28, 90, 24, IDC_CFG_DISCOVER_BTN);
-	create_label(L"设备列表:", gx + 116, 32, 64, 14);
+	g_cfg.hConn = create_button(L"连接", gx + 108, 28, 80, 24, IDC_CFG_CONNECT);
+	create_label(L"设备列表:", gx + 200, 32, 64, 14);
 	g_cfg.hDevList = CreateWindowExW(0, L"COMBOBOX", L"",
 		WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP,
-		gx + 180, 28, 300, 220, hWnd, (HMENU)(INT_PTR)IDC_CFG_DEVLIST, g_hInst, NULL);
+		gx + 264, 28, 280, 220, hWnd, (HMENU)(INT_PTR)IDC_CFG_DEVLIST, g_hInst, NULL);
 	SendMessageW(g_cfg.hDevList, WM_SETFONT, (WPARAM)g_hFont, TRUE);
 	/* 行2: 目标设备 IP */
 	create_label(L"目标设备 IP:", gx + 12, 62, 90, 14);
@@ -478,6 +481,52 @@ static void on_factory_reset(void)
 	}
 }
 
+/* 按 UDP 连接状态刷新各查询/设置按钮可用性.
+ * 未连接时: 查询版本/重启/网络应用/Modbus应用+读取/CAN应用+读取/出厂重置 全禁用.
+ * 已连接时: 全部恢复可用. */
+static void update_buttons(void)
+{
+	BOOL en = g_cfg.udp_connected ? TRUE : FALSE;
+	EnableWindow(GetDlgItem(g_cfg.hSelf, IDC_CFG_GETVER), en);
+	EnableWindow(GetDlgItem(g_cfg.hSelf, IDC_CFG_REBOOT), en);
+	EnableWindow(GetDlgItem(g_cfg.hSelf, IDC_CFG_NIP_APPLY), en);
+	EnableWindow(GetDlgItem(g_cfg.hSelf, IDC_CFG_MB_APPLY), en);
+	EnableWindow(GetDlgItem(g_cfg.hSelf, IDC_CFG_MB_READ), en);
+	EnableWindow(GetDlgItem(g_cfg.hSelf, IDC_CFG_CAN_APPLY), en);
+	EnableWindow(GetDlgItem(g_cfg.hSelf, IDC_CFG_CAN_READ), en);
+	EnableWindow(GetDlgItem(g_cfg.hSelf, IDC_CFG_FACTORY), en);
+}
+
+/* UDP 连接/断开 toggle. 连接 = 用目标 IP 调 GET_VERSION 握手, 成功即已连接. */
+static void on_connect(void)
+{
+	if (g_cfg.udp_connected) {
+		/* 断开 */
+		g_cfg.udp_connected = false;
+		SetWindowTextW(g_cfg.hConn, L"连接");
+		SetWindowTextW(g_cfg.hVersion, L"(未查询)");
+		log_append(L"已断开连接");
+		update_buttons();
+		return;
+	}
+	char ip[32];
+	current_target_ip(ip, sizeof(ip));
+	char ver[64] = {0};
+	if (!UdpManager_GetVersion(g_cfg.udp, ip, ver, sizeof(ver))) {
+		show_transport_error(L"连接设备 (GET_VERSION)");
+		return;
+	}
+	g_cfg.udp_connected = true;
+	SetWindowTextW(g_cfg.hConn, L"断开");
+	wchar_t wver[64];
+	MultiByteToWideChar(CP_UTF8, 0, ver, -1, wver, 64);
+	SetWindowTextW(g_cfg.hVersion, wver);
+	wchar_t m[128];
+	swprintf(m, 128, L"连接成功: %hs", ver);
+	log_append(m);
+	update_buttons();
+}
+
 /* WM_COMMAND 总分发. */
 static void on_command(WPARAM wParam, LPARAM lParam)
 {
@@ -494,6 +543,7 @@ static void on_command(WPARAM wParam, LPARAM lParam)
 
 	switch (id) {
 	case IDC_CFG_DISCOVER_BTN: on_discover(); break;
+	case IDC_CFG_CONNECT:      on_connect(); break;
 	case IDC_CFG_GETVER:       on_get_version(); break;
 	case IDC_CFG_REBOOT:       on_reboot(); break;
 	case IDC_CFG_NIP_APPLY:    on_apply_ip(); break;
@@ -514,11 +564,14 @@ static LRESULT CALLBACK cfg_wndproc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
 		g_hInst = ((LPCREATESTRUCT)lParam)->hInstance;
 		create_controls(hWnd);
 		g_cfg.udp = UdpManager_Create();
+		g_cfg.udp_connected = false;
 		if (!g_cfg.udp) {
 			log_append(L"错误: UdpManager 创建失败");
 		} else {
-			log_append(L"就绪. 请先发现设备或填写目标 IP");
+			log_append(L"就绪. 请先发现设备并点击\"连接\"");
 		}
+		/* 初始未连接: 禁用所有查询/设置按钮 */
+		update_buttons();
 		return 0;
 	case WM_COMMAND:
 		on_command(wParam, lParam);

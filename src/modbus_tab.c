@@ -83,7 +83,7 @@ typedef struct {
 	/* RTU 行 */
 	HWND hRtuLbl1, hCom, hRtuLbl2, hBaud, hRtuLbl3, hUidRtu;
 	/* 连接 + 状态 */
-	HWND hConn, hDisc, hStatus;
+	HWND hConn, hStatus;
 	/* 刷新 + 自动刷新 */
 	HWND hRefreshAll, hAutoRef, hAutoRefInt, hAutoRefLbl;
 	/* 面板 groupbox */
@@ -227,13 +227,13 @@ static void set_conn_state(bool is_conn)
 	g_mb.connected = is_conn;
 	if (is_conn) {
 		SetWindowTextW(g_mb.hStatus, L"● 已连接");
-		EnableWindow(g_mb.hConn, FALSE);
-		EnableWindow(g_mb.hDisc, TRUE);
+		SetWindowTextW(g_mb.hConn, L"断开");
+		EnableWindow(g_mb.hConn, TRUE);
 		EnableWindow(g_mb.hRefreshAll, TRUE);
 	} else {
 		SetWindowTextW(g_mb.hStatus, L"○ 未连接");
+		SetWindowTextW(g_mb.hConn, L"连接");
 		EnableWindow(g_mb.hConn, TRUE);
-		EnableWindow(g_mb.hDisc, FALSE);
 		EnableWindow(g_mb.hRefreshAll, FALSE);
 		/* 连接断开后 LED/DO/AI 文本失效 */
 		g_mb.di_valid = false;
@@ -421,6 +421,14 @@ static void refresh_reg_table(void)
 
 static void on_connect(void)
 {
+	/* 已连接 → 切换为断开 */
+	if (g_mb.connected) {
+		MbClient_Disconnect(g_mb.mb);
+		set_conn_state(false);
+		log_append(L"已断开");
+		return;
+	}
+
 	int rtu = current_channel();
 	uint8_t uid = 1;
 
@@ -500,13 +508,6 @@ static void on_connect(void)
 	wchar_t m[64];
 	swprintf(m, 64, L"已连接 (%ls)", rtu ? L"RTU" : L"TCP");
 	log_append(m);
-}
-
-static void on_disconnect(void)
-{
-	MbClient_Disconnect(g_mb.mb);
-	set_conn_state(false);
-	log_append(L"已断开");
 }
 
 /* ===== DO 按钮 / 查询选中 / 双击写 ===== */
@@ -784,7 +785,6 @@ static void on_command(WPARAM wParam)
 
 	switch (id) {
 	case IDC_MB_CONNECT:    on_connect(); break;
-	case IDC_MB_DISCONNECT: on_disconnect(); break;
 	case IDC_MB_REFRESH_ALL: on_refresh_all(); break;
 	case IDC_MB_AUTOREF:    on_autoref_toggle(); break;
 	case IDC_MB_REG_QUERY:  on_query_selected(); break;
@@ -816,7 +816,6 @@ static void create_controls(HWND hWnd)
 	SendMessageW(g_mb.hChanTcp, BM_SETCHECK, BST_CHECKED, 0); /* 默认 TCP */
 	/* 连接/断开 + 状态 */
 	g_mb.hConn = create_button(L"连接", gx + 200, 26, 70, 22, IDC_MB_CONNECT);
-	g_mb.hDisc = create_button(L"断开", gx + 274, 26, 70, 22, IDC_MB_DISCONNECT);
 	create_label(L"状态:", gx + 352, 30, 36, 14);
 	g_mb.hStatus = create_label(L"○ 未连接", gx + 388, 30, 120, 14);
 
@@ -865,8 +864,7 @@ static void create_controls(HWND hWnd)
 	/* 默认 TCP, 隐藏 RTU 行 */
 	apply_channel_visibility();
 
-	/* 初始按钮状态: 未连接时禁用断开/刷新 */
-	EnableWindow(g_mb.hDisc, FALSE);
+	/* 初始按钮状态: 未连接时禁用刷新 */
 	EnableWindow(g_mb.hRefreshAll, FALSE);
 
 	/* ===== DI 面板 groupbox ===== */

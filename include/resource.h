@@ -16,6 +16,7 @@
 /* ===== tab1 控件 ID (1xxx) ===== */
 #define IDC_CFG_DISCOVER_BTN    1001
 #define IDC_CFG_DEVLIST         1002   /* 下拉框 (CBS_DROPDOWNLIST) */
+#define IDC_CFG_CONNECT         1003   /* UDP 连接/断开 toggle 按钮 */
 #define IDC_CFG_IP1             1010   /* 目标设备 IP 4 段 */
 #define IDC_CFG_IP2             1011
 #define IDC_CFG_IP3             1012
