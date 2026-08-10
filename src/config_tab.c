@@ -166,8 +166,11 @@ static void create_controls(HWND hWnd)
 	g_cfg.hSelf = hWnd;
 	g_hFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
 
-	/* 行坐标基准 */
-	int gx = 12, gw = 776;
+	/* 行坐标基准: 按子窗口实际宽度动态计算, 左右各留 4px 边距
+	 * (右对齐按钮因此恒贴窗口右边框, 不会因窗口宽度变化而溢出) */
+	RECT rc;
+	GetClientRect(hWnd, &rc);
+	int gx = 4, gw = rc.right - 8;
 
 	/* ===== 设备发现 groupbox ===== */
 	create_groupbox(L"设备发现", gx, 4, gw, 112);
