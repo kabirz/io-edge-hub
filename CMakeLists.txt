@@ -11,6 +11,7 @@ set(SOURCES
     src/main.c
     src/pcan_loader.c
     src/fw_image.c
+    src/udp_manager.c
 )
 
 if(WIN32)
