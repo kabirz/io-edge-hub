@@ -15,6 +15,7 @@ set(SOURCES
     src/can_manager.c
     src/modbus_client.c
     src/config_tab.c
+    src/upgrade_tab.c
 )
 
 if(WIN32)

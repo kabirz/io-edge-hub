@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include "app.h"
 #include "config_tab.h"
+#include "upgrade_tab.h"
 #include "resource.h"
 
 #pragma comment(lib, "comctl32.lib")
@@ -117,12 +118,7 @@ static LRESULT CALLBACK main_wndproc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM 
 	return DefWindowProcW(hWnd, msg, wParam, lParam);
 }
 
-/* 临时空 tab 工厂 (后续 Task 7/9 替换为真实实现). */
-HWND UpgradeTab_Create(HWND hParent, HINSTANCE hInst)
-{
-	return CreateWindowExW(0, L"STATIC", L"Tab2 占位 (固件升级)",
-		WS_CHILD | SS_CENTER, 0, 0, 0, 0, hParent, NULL, hInst, NULL);
-}
+/* ModbusTab_Create 仍为占位 (Task 9 实现). */
 HWND ModbusTab_Create(HWND hParent, HINSTANCE hInst)
 {
 	return CreateWindowExW(0, L"STATIC", L"Tab3 占位 (Modbus 调试)",

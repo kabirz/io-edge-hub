@@ -44,7 +44,26 @@
 /* 日志 */
 #define IDC_CFG_LOG             1060   /* 多行只读 EDIT */
 
-/* tab2 控件 ID (2xxx) — Task 7 扩展 */
+/* ===== tab2 控件 ID (2xxx) — Task 7 固件升级 ===== */
+#define IDC_UPG_CHAN_UDP        2001   /* 单选: UDP 通道 */
+#define IDC_UPG_CHAN_CAN        2002   /* 单选: CAN 通道 */
+#define IDC_UPG_IP1             2010   /* UDP 目标 IP 4 段 */
+#define IDC_UPG_IP2             2011
+#define IDC_UPG_IP3             2012
+#define IDC_UPG_IP4             2013
+#define IDC_UPG_TEST            2014   /* 测试模式 复选框 */
+#define IDC_UPG_CAN_DEV         2020   /* PCAN 设备下拉 */
+#define IDC_UPG_CAN_BAUD        2021   /* PCAN 波特率下拉 */
+#define IDC_UPG_CAN_CONN        2022   /* PCAN 连接/断开 按钮 */
+#define IDC_UPG_CAN_STATUS      2023   /* PCAN 连接状态 静态 */
+#define IDC_UPG_FILE            2030   /* 固件路径 EDIT */
+#define IDC_UPG_BROWSE          2031   /* 浏览 按钮 */
+#define IDC_UPG_FILEINFO        2032   /* 静态: magic/size/keyhash */
+#define IDC_UPG_START           2040   /* 开始升级 按钮 */
+#define IDC_UPG_CANCEL          2041   /* 取消 按钮 */
+#define IDC_UPG_PROGRESS        2042   /* 进度条 */
+#define IDC_UPG_STATUS          2043   /* 静态: 状态文字 */
+#define IDC_UPG_LOG             2044   /* 多行日志 */
 /* tab3 控件 ID (3xxx) — Task 9 扩展 */
 
 #endif /* RESOURCE_H */
