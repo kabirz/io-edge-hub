@@ -27,7 +27,7 @@
 typedef struct {
 	HWND hSelf;
 	HWND hConn;
-	HWND hDevList, hIp[4], hNip[4], hVersion, hMbSlave, hMbBaud;
+	HWND hDevList, hIp, hNip, hVersion, hMbSlave, hMbBaud;
 	HWND hTime;
 	HWND hLog;
 	UdpManager *udp;
@@ -99,29 +99,27 @@ static int create_ip_row(int x, int y, int ids[4], HWND out_hwnd[4])
 
 /* ===== 业务辅助 ===== */
 
-/* 从 4 个 EDIT 控件读 IP, 写入 ip4[4]. 返回是否合法 (每段 0-255). */
-static bool read_ip4(HWND ip_edits[4], uint8_t ip4[4])
+/* 从单个 IP 输入框读 "a.b.c.d", 写入 ip4[4].
+ * 返回是否合法: 必须严格匹配 4 段, 每段 0-255. */
+static bool read_ip_edit(HWND hEdit, uint8_t ip4[4])
 {
+	wchar_t buf[32];
+	GetWindowTextW(hEdit, buf, 32);
+	int v[4];
+	if (swscanf(buf, L"%d.%d.%d.%d", &v[0], &v[1], &v[2], &v[3]) != 4) return false;
 	for (int i = 0; i < 4; i++) {
-		wchar_t buf[8];
-		GetWindowTextW(ip_edits[i], buf, 8);
-		int v = _wtoi(buf);
-		if (v < 0 || v > 255) return false;
-		ip4[i] = (uint8_t)v;
+		if (v[i] < 0 || v[i] > 255) return false;
+		ip4[i] = (uint8_t)v[i];
 	}
 	return true;
 }
 
-/* 当前目标 IP 拼成点分十进制窄字符串. */
+/* 当前目标 IP 拼成点分十进制窄字符串 ("a.b.c.d"). 不校验合法性, 调用方负责. */
 static void current_target_ip(char *out, int cap)
 {
-	int v[4];
-	for (int i = 0; i < 4; i++) {
-		wchar_t buf[8];
-		GetWindowTextW(g_cfg.hIp[i], buf, 8);
-		v[i] = _wtoi(buf);
-	}
-	snprintf(out, cap, "%d.%d.%d.%d", v[0], v[1], v[2], v[3]);
+	wchar_t buf[32];
+	GetWindowTextW(g_cfg.hIp, buf, 32);
+	WideCharToMultiByte(CP_ACP, 0, buf, -1, out, cap, NULL, NULL);
 }
 
 /* 日志框追加一行 (带 [HH:MM:SS] 时间戳). */
@@ -194,10 +192,9 @@ static void create_controls(HWND hWnd)
 		WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP,
 		gx + 264, 28, 280, 220, hWnd, (HMENU)(INT_PTR)IDC_CFG_DEVLIST, g_hInst, NULL);
 	SendMessageW(g_cfg.hDevList, WM_SETFONT, (WPARAM)g_hFont, TRUE);
-	/* 行2: 目标设备 IP */
+	/* 行2: 目标设备 IP (单框, 整体输入 "a.b.c.d") */
 	create_label(L"目标设备 IP:", gx + 12, 62, 90, 14);
-	int ip_ids[4] = { IDC_CFG_IP1, IDC_CFG_IP2, IDC_CFG_IP3, IDC_CFG_IP4 };
-	create_ip_row(gx + 104, 58, ip_ids, g_cfg.hIp);
+	g_cfg.hIp = create_edit(gx + 104, 58, 140, 22, IDC_CFG_IP1, 0);
 	/* 行3: 版本 + 查询 + 重启 (按钮右对齐) */
 	create_label(L"版本:", gx + 12, 92, 40, 14);
 	g_cfg.hVersion = create_label(L"(未查询)", gx + 54, 92, 280, 14);
@@ -207,8 +204,7 @@ static void create_controls(HWND hWnd)
 	/* ===== 网络参数 groupbox ===== */
 	create_groupbox(L"网络参数", gx, 130, gw, 50);
 	create_label(L"新 IP:", gx + 12, 154, 44, 14);
-	int nip_ids[4] = { IDC_CFG_NIP1, IDC_CFG_NIP2, IDC_CFG_NIP3, IDC_CFG_NIP4 };
-	create_ip_row(gx + 60, 150, nip_ids, g_cfg.hNip);
+	g_cfg.hNip = create_edit(gx + 60, 150, 140, 22, IDC_CFG_NIP1, 0);
 	create_button(L"应用", gx + gw - 96, 150, 80, 24, IDC_CFG_NIP_APPLY);
 
 
@@ -260,11 +256,9 @@ static void on_devlist_changed(void)
 	SendMessageW(g_cfg.hDevList, CB_GETLBTEXT, sel, (LPARAM)wentry);
 	int ip[4];
 	if (swscanf(wentry, L"%d.%d.%d.%d", &ip[0], &ip[1], &ip[2], &ip[3]) == 4) {
-		wchar_t buf[8];
-		for (int i = 0; i < 4; i++) {
-			swprintf(buf, 8, L"%d", ip[i]);
-			SetWindowTextW(g_cfg.hIp[i], buf);
-		}
+		wchar_t buf[32];
+		swprintf(buf, 32, L"%d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
+		SetWindowTextW(g_cfg.hIp, buf);
 		log_append(L"已从设备列表回填目标 IP");
 	}
 }
@@ -299,11 +293,23 @@ static void on_apply_ip(void)
 	char ip[32];
 	current_target_ip(ip, sizeof(ip));
 	uint8_t nip[4];
-	if (!read_ip4(g_cfg.hNip, nip)) {
-		MessageBoxW(g_cfg.hSelf, L"新 IP 各段必须在 0-255", L"输入错误",
-		            MB_ICONERROR);
+	if (!read_ip_edit(g_cfg.hNip, nip)) {
+		MessageBoxW(g_cfg.hSelf,
+		            L"新 IP 格式错误, 请输入 a.b.c.d (每段 0-255)",
+		            L"输入错误", MB_ICONERROR);
 		return;
 	}
+	/* 目标 IP 也要校验 (传输层会用到). 单框输入可能为空或格式错. */
+	uint8_t tip[4];
+	if (!read_ip_edit(g_cfg.hIp, tip)) {
+		MessageBoxW(g_cfg.hSelf,
+		            L"目标设备 IP 格式错误, 请输入 a.b.c.d",
+		            L"输入错误", MB_ICONERROR);
+		return;
+	}
+	/* read_ip_edit 已校验过, 重新拼合法串覆盖 current_target_ip 的原始文本,
+	 * 避免传输层收到 "192.168.1." 这类尾部缺失但仍能 WideCharToMultiByte 的串. */
+	snprintf(ip, sizeof(ip), "%u.%u.%u.%u", tip[0], tip[1], tip[2], tip[3]);
 	uint8_t ok = 0;
 	if (UdpManager_SetIp(g_cfg.udp, ip, nip, &ok)) {
 		if (ok) {
