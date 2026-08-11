@@ -185,11 +185,16 @@ static void log_append(const wchar_t *msg)
 	SendMessageW(g_mb.hLog, EM_REPLACESEL, 0, (LPARAM)line);
 }
 
-/* 显示 Modbus 传输错误 (弹框 + 日志). */
+/* 显示 Modbus 传输错误 (弹框 + 日志).
+ * MbClient_GetLastError 返回 UTF-8 char* (MSVC /utf-8 编译), 必须用
+ * MultiByteToWideChar(CP_UTF8) 转宽串, 不能用 swprintf 的 %hs (按 CP_ACP 解). */
 static void show_mb_error(const wchar_t *op)
 {
+	const char *e = MbClient_GetLastError(g_mb.mb);
+	wchar_t werr[192];
+	MultiByteToWideChar(CP_UTF8, 0, e, -1, werr, 192);
 	wchar_t m[256];
-	swprintf(m, 256, L"%ls 失败: %hs", op, MbClient_GetLastError(g_mb.mb));
+	swprintf(m, 256, L"%ls 失败: %ls", op, werr);
 	log_append(m);
 	MessageBoxW(g_mb.hSelf, m, L"错误", MB_ICONERROR);
 }
@@ -578,13 +583,14 @@ static LRESULT CALLBACK input_wnd_proc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
 			WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
 			15, 15, 330, 24, hWnd, (HMENU)100, g_hInst, NULL);
 		SendMessageW(g_hInputEdit, WM_SETFONT, (WPARAM)g_hFont, TRUE);
+		/* 两按钮在 360 宽客户区居中: 总宽 80+10+80=170, 起始 x=(360-170)/2=95 */
 		HWND hCancel = CreateWindowExW(0, L"BUTTON", L"取消",
 			WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-			185, 50, 80, 26, hWnd, (HMENU)IDCANCEL, g_hInst, NULL);
+			95, 50, 80, 26, hWnd, (HMENU)IDCANCEL, g_hInst, NULL);
 		SendMessageW(hCancel, WM_SETFONT, (WPARAM)g_hFont, TRUE);
 		HWND hOk = CreateWindowExW(0, L"BUTTON", L"确定",
 			WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | BS_DEFPUSHBUTTON,
-			275, 50, 80, 26, hWnd, (HMENU)IDOK, g_hInst, NULL);
+			185, 50, 80, 26, hWnd, (HMENU)IDOK, g_hInst, NULL);
 		SendMessageW(hOk, WM_SETFONT, (WPARAM)g_hFont, TRUE);
 		return 0;
 	}

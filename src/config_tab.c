@@ -150,8 +150,13 @@ static void update_time_display(void)
 /* 通用: 传输失败时弹错误框 + 记日志. */
 static void show_transport_error(const wchar_t *op)
 {
+	/* UdpManager_GetLastError 返回 UTF-8 char* (MSVC /utf-8 编译), 用
+	 * MultiByteToWideChar(CP_UTF8) 转, 不能用 swprintf 的 %hs (按 CP_ACP 解). */
+	const char *e = UdpManager_GetLastError(g_cfg.udp);
+	wchar_t werr[192];
+	MultiByteToWideChar(CP_UTF8, 0, e, -1, werr, 192);
 	wchar_t m[256];
-	swprintf(m, 256, L"%ls 失败: %hs", op, UdpManager_GetLastError(g_cfg.udp));
+	swprintf(m, 256, L"%ls 失败: %ls", op, werr);
 	MessageBoxW(g_cfg.hSelf, m, L"错误", MB_ICONERROR);
 	log_append(m);
 }
