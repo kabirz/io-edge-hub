@@ -6,9 +6,9 @@
  *
  * 布局 (主窗口最小 720x560, tab 显示区约 712x504):
  *   - 设备发现 groupbox: 发现按钮 + 设备下拉 + 目标 IP (4 段) + 版本行 + 查询/重启
- *   - 网络参数 groupbox: 新 IP (4 段) + 应用
+ *   - 网络参数 groupbox: 新 IP (4 段) + 应用 (持久化, 需手动重启生效)
  *   - Modbus 参数 groupbox: 从机地址 + 波特率下拉 + 应用/读取
- *   - CAN 参数 groupbox: CAN ID + 波特率(k) + 应用/读取
+ *   - 时间设置 groupbox: 应用本机时间到设备 RTC (UDP 0x14)
  *   - 出厂重置按钮
  *   - 操作日志 groupbox: 多行只读 EDIT (带时间戳)
  */
@@ -20,6 +20,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <time.h>
 #include <wchar.h>
 
 /* ===== 静态状态: 所有控件 HWND + UdpManager 实例 ===== */
@@ -27,13 +28,13 @@ typedef struct {
 	HWND hSelf;
 	HWND hConn;
 	HWND hDevList, hIp[4], hNip[4], hVersion, hMbSlave, hMbBaud;
-	HWND hCanId, hCanBaud, hLog;
+	HWND hTime;
+	HWND hLog;
 	UdpManager *udp;
 	bool udp_connected;   /* UDP 连接状态 (连接后启用查询/设置) */
 } ConfigTab;
 
 static ConfigTab g_cfg;
-static HINSTANCE g_hInst = NULL;
 static HFONT g_hFont = NULL;
 static const wchar_t *CONFIG_TAB_CLASS = L"ioEdgeHubConfigTabCls";
 static BOOL g_classRegistered = FALSE;
@@ -136,6 +137,18 @@ static void log_append(const wchar_t *msg)
 	SendMessageW(g_cfg.hLog, EM_REPLACESEL, 0, (LPARAM)line);
 }
 
+/* 刷新本机时间显示 (WM_TIMER 每秒调用). */
+static void update_time_display(void)
+{
+	SYSTEMTIME st;
+	GetLocalTime(&st);
+	wchar_t buf[40];
+	swprintf(buf, 40, L"%04d-%02d-%02d %02d:%02d:%02d",
+	         st.wYear, st.wMonth, st.wDay,
+	         st.wHour, st.wMinute, st.wSecond);
+	SetWindowTextW(g_cfg.hTime, buf);
+}
+
 /* 通用: 传输失败时弹错误框 + 记日志. */
 static void show_transport_error(const wchar_t *op)
 {
@@ -217,14 +230,11 @@ static void create_controls(HWND hWnd)
 	create_button(L"应用", gx + gw - 180, 216, 80, 24, IDC_CFG_MB_APPLY);
 	create_button(L"读取", gx + gw - 96, 216, 80, 24, IDC_CFG_MB_READ);
 
-	/* ===== CAN 参数 groupbox ===== */
-	create_groupbox(L"CAN 参数", gx, 262, gw, 50);
-	create_label(L"CAN ID:", gx + 12, 286, 48, 14);
-	g_cfg.hCanId = create_edit(gx + 64, 282, 60, 22, IDC_CFG_CAN_ID, ES_NUMBER);
-	create_label(L"波特率(k):", gx + 140, 286, 64, 14);
-	g_cfg.hCanBaud = create_edit(gx + 204, 282, 60, 22, IDC_CFG_CAN_BAUD, ES_NUMBER);
-	create_button(L"应用", gx + gw - 180, 282, 80, 24, IDC_CFG_CAN_APPLY);
-	create_button(L"读取", gx + gw - 96, 282, 80, 24, IDC_CFG_CAN_READ);
+	/* ===== 时间设置 groupbox ===== */
+	create_groupbox(L"时间设置", gx, 262, gw, 50);
+	create_label(L"本机时间:", gx + 12, 286, 64, 14);
+	g_cfg.hTime = create_label(L"--", gx + 80, 286, 220, 14);
+	create_button(L"应用本机时间", gx + gw - 180, 282, 168, 24, IDC_CFG_TIME_APPLY);
 
 	/* ===== 出厂重置 (右对齐) ===== */
 	create_button(L"出厂重置", gx + gw - 96, 326, 80, 24, IDC_CFG_FACTORY);
@@ -241,19 +251,15 @@ static void create_controls(HWND hWnd)
 
 /* ===== WM_COMMAND: 按钮处理 ===== */
 
-/* 设备下拉选择变更: 从 "io-edge-hub <a.b.c.d> v..." 解析 IP 自动填入. */
+/* 设备下拉选择变更: 发现回复格式为 "a.b.c.d", 直接解析 IP 自动填入. */
 static void on_devlist_changed(void)
 {
 	int sel = (int)SendMessageW(g_cfg.hDevList, CB_GETCURSEL, 0, 0);
 	if (sel < 0) return;
-	wchar_t wentry[160] = {0};
+	wchar_t wentry[64] = {0};
 	SendMessageW(g_cfg.hDevList, CB_GETLBTEXT, sel, (LPARAM)wentry);
-	wchar_t *p1 = wcschr(wentry, L'<');
-	wchar_t *p2 = p1 ? wcschr(p1, L'>') : NULL;
-	if (!p1 || !p2) return;
-	*p2 = L'\0';
 	int ip[4];
-	if (swscanf(p1 + 1, L"%d.%d.%d.%d", &ip[0], &ip[1], &ip[2], &ip[3]) == 4) {
+	if (swscanf(wentry, L"%d.%d.%d.%d", &ip[0], &ip[1], &ip[2], &ip[3]) == 4) {
 		wchar_t buf[8];
 		for (int i = 0; i < 4; i++) {
 			swprintf(buf, 8, L"%d", ip[i]);
@@ -263,7 +269,7 @@ static void on_devlist_changed(void)
 	}
 }
 
-/* 发现设备: 调 DISCOVER, 拆分结果填下拉. */
+/* 发现设备: 调 GET_IP 广播, 拆分结果填下拉 (每行一个 "a.b.c.d"). */
 static void on_discover(void)
 {
 	char buf[2048];
@@ -301,11 +307,12 @@ static void on_apply_ip(void)
 	uint8_t ok = 0;
 	if (UdpManager_SetIp(g_cfg.udp, ip, nip, &ok)) {
 		if (ok) {
-			log_append(L"SET_IP 成功, 设备将重启");
-			MessageBoxW(g_cfg.hSelf, L"IP 已设置, 设备将重启", L"成功",
-			            MB_ICONINFORMATION);
+			log_append(L"SET_IP 成功 (已持久化, 需手动重启生效)");
+			MessageBoxW(g_cfg.hSelf,
+			            L"IP 已设置并持久化\n请手动重启设备 (重启按钮或重新上电) 使新 IP 生效",
+			            L"成功", MB_ICONINFORMATION);
 		} else {
-			log_append(L"SET_IP 被拒绝 (IP 末段 0/255 或首段 224-239)");
+			log_append(L"SET_IP 被拒绝 (IP 末段 0/255 或首段 0/127/224-255)");
 			MessageBoxW(g_cfg.hSelf, L"设备拒绝该 IP", L"警告",
 			            MB_ICONWARNING);
 		}
@@ -398,60 +405,29 @@ static void on_read_modbus(void)
 	}
 }
 
-/* 应用 CAN 参数 (SET_CAN 0x16). */
-static void on_apply_can(void)
+/* 应用本机时间到设备 (SET_TIME 0x14). 取上位机当前 Unix 时间戳发给设备. */
+static void on_apply_time(void)
 {
 	char ip[32];
 	current_target_ip(ip, sizeof(ip));
-	wchar_t wid[16];
-	GetWindowTextW(g_cfg.hCanId, wid, 16);
-	int can_id = _wtoi(wid);
-	wchar_t wb[16];
-	GetWindowTextW(g_cfg.hCanBaud, wb, 16);
-	int baud_k = _wtoi(wb);
-	if (can_id < 0 || can_id > 0x7FF) {
-		MessageBoxW(g_cfg.hSelf, L"CAN ID 应在 0-2047 (11 位标准 ID)",
-		            L"输入错误", MB_ICONERROR);
-		return;
-	}
-	if (baud_k <= 0) {
-		MessageBoxW(g_cfg.hSelf, L"CAN 波特率(k) 必须为正数", L"输入错误",
-		            MB_ICONERROR);
-		return;
-	}
+	/* time(NULL) 返回 time_t (Unix 秒). Win32 time_t 是 64-bit, 截断到 32 位
+	 * (设备端 uint32 接收, 2038 年前均有效). */
+	uint32_t ts = (uint32_t)time(NULL);
 	uint8_t ok = 0;
-	if (UdpManager_SetCan(g_cfg.udp, ip, (uint16_t)can_id, (uint16_t)baud_k, &ok)) {
+	if (UdpManager_SetTime(g_cfg.udp, ip, ts, &ok)) {
 		if (ok) {
 			wchar_t m[96];
-			swprintf(m, 96, L"SET_CAN 成功 (id=0x%X, baud=%dk)", can_id, baud_k);
+			swprintf(m, 96, L"SET_TIME 成功 (unix=%u)", ts);
 			log_append(m);
-			MessageBoxW(g_cfg.hSelf, L"CAN 参数已应用", L"成功",
+			MessageBoxW(g_cfg.hSelf, L"时间已同步到设备 RTC", L"成功",
 			            MB_ICONINFORMATION);
 		} else {
-			log_append(L"SET_CAN 被拒绝");
-			MessageBoxW(g_cfg.hSelf, L"设备拒绝该参数", L"警告",
+			log_append(L"SET_TIME 被拒绝 (时间戳越界)");
+			MessageBoxW(g_cfg.hSelf, L"设备拒绝该时间戳", L"警告",
 			            MB_ICONWARNING);
 		}
 	} else {
-		show_transport_error(L"SET_CAN");
-	}
-}
-
-/* 读取 CAN 参数 (GET_CAN 0x17). */
-static void on_read_can(void)
-{
-	char ip[32];
-	current_target_ip(ip, sizeof(ip));
-	uint16_t can_id = 0, baud_k = 0;
-	if (UdpManager_GetCan(g_cfg.udp, ip, &can_id, &baud_k)) {
-		wchar_t buf[16];
-		swprintf(buf, 16, L"%u", can_id);
-		SetWindowTextW(g_cfg.hCanId, buf);
-		swprintf(buf, 16, L"%u", baud_k);
-		SetWindowTextW(g_cfg.hCanBaud, buf);
-		log_append(L"GET_CAN 成功");
-	} else {
-		show_transport_error(L"GET_CAN");
+		show_transport_error(L"SET_TIME");
 	}
 }
 
@@ -459,7 +435,7 @@ static void on_read_can(void)
 static void on_factory_reset(void)
 {
 	if (MessageBoxW(g_cfg.hSelf,
-	                L"确认出厂重置?\n将擦除所有参数 (IP/Modbus/CAN) 并重启设备",
+	                L"确认出厂重置?\n将擦除所有参数 (IP/Modbus) 并重启设备",
 	                L"危险操作", MB_YESNO | MB_ICONWARNING) != IDYES) {
 		return;
 	}
@@ -482,7 +458,7 @@ static void on_factory_reset(void)
 }
 
 /* 按 UDP 连接状态刷新各查询/设置按钮可用性.
- * 未连接时: 查询版本/重启/网络应用/Modbus应用+读取/CAN应用+读取/出厂重置 全禁用.
+ * 未连接时: 查询版本/重启/网络应用/Modbus应用+读取/时间应用/出厂重置 全禁用.
  * 已连接时: 全部恢复可用. */
 static void update_buttons(void)
 {
@@ -492,8 +468,7 @@ static void update_buttons(void)
 	EnableWindow(GetDlgItem(g_cfg.hSelf, IDC_CFG_NIP_APPLY), en);
 	EnableWindow(GetDlgItem(g_cfg.hSelf, IDC_CFG_MB_APPLY), en);
 	EnableWindow(GetDlgItem(g_cfg.hSelf, IDC_CFG_MB_READ), en);
-	EnableWindow(GetDlgItem(g_cfg.hSelf, IDC_CFG_CAN_APPLY), en);
-	EnableWindow(GetDlgItem(g_cfg.hSelf, IDC_CFG_CAN_READ), en);
+	EnableWindow(GetDlgItem(g_cfg.hSelf, IDC_CFG_TIME_APPLY), en);
 	EnableWindow(GetDlgItem(g_cfg.hSelf, IDC_CFG_FACTORY), en);
 }
 
@@ -549,8 +524,7 @@ static void on_command(WPARAM wParam, LPARAM lParam)
 	case IDC_CFG_NIP_APPLY:    on_apply_ip(); break;
 	case IDC_CFG_MB_APPLY:     on_apply_modbus(); break;
 	case IDC_CFG_MB_READ:      on_read_modbus(); break;
-	case IDC_CFG_CAN_APPLY:    on_apply_can(); break;
-	case IDC_CFG_CAN_READ:     on_read_can(); break;
+	case IDC_CFG_TIME_APPLY:   on_apply_time(); break;
 	case IDC_CFG_FACTORY:      on_factory_reset(); break;
 	}
 }
@@ -572,6 +546,14 @@ static LRESULT CALLBACK cfg_wndproc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
 		}
 		/* 初始未连接: 禁用所有查询/设置按钮 */
 		update_buttons();
+		/* 启动 1s 定时器刷新本机时间显示 */
+		update_time_display();
+		SetTimer(hWnd, IDC_CFG_TIMER, 1000, NULL);
+		return 0;
+	case WM_TIMER:
+		if (wParam == IDC_CFG_TIMER) {
+			update_time_display();
+		}
 		return 0;
 	case WM_COMMAND:
 		on_command(wParam, lParam);

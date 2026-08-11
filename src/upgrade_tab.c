@@ -69,7 +69,6 @@ typedef struct {
 } UpgradeTab;
 
 static UpgradeTab g_upg;
-static HINSTANCE g_hInst = NULL;
 static HFONT g_hFont = NULL;
 static const wchar_t *UPGRADE_TAB_CLASS = L"ioEdgeHubUpgradeTabCls";
 static BOOL g_classRegistered = FALSE;

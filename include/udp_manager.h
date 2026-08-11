@@ -9,7 +9,7 @@
 #include <stdbool.h>
 
 #define IOEDGE_UDP_PORT        8600   /* 固件配置/UDP升级端口 */
-#define IOEDGE_UDP_REPLY_PORT  8601   /* DISCOVER 跨网段回复端口 */
+#define IOEDGE_UDP_REPLY_PORT  8601   /* GET_IP 跨网段回复端口 */
 #define IOEDGE_UDP_TIMEOUT_MS  1000   /* 单条命令同步等待超时 */
 
 /* opaque 句柄 */
@@ -33,18 +33,14 @@ bool UdpManager_FwEnd(UdpManager *m, const char *ip, uint8_t test, uint16_t crc1
 
 /* --- 配置命令 (0x10+, 大端) --- */
 bool UdpManager_SetIp(UdpManager *m, const char *ip, uint8_t ip4[4], uint8_t *out_ok);  /* 0x10 */
-bool UdpManager_GetNet(UdpManager *m, const char *ip, uint8_t ip4[4],
-                       uint8_t *out_slave, uint16_t *out_tcp_port);                      /* 0x11 */
+bool UdpManager_GetIp(UdpManager *m, const char *ip, uint8_t ip4[4]);                    /* 0x11 */
 bool UdpManager_SetModbus(UdpManager *m, const char *ip, uint8_t slave_id,
                           uint16_t baud, uint8_t *out_ok);                               /* 0x12 */
 bool UdpManager_GetModbus(UdpManager *m, const char *ip, uint8_t *out_slave,
                           uint16_t *out_baud);                                           /* 0x13 */
-bool UdpManager_SetCan(UdpManager *m, const char *ip, uint16_t can_id,
-                       uint16_t baud_k, uint8_t *out_ok);                                /* 0x16 */
-bool UdpManager_GetCan(UdpManager *m, const char *ip, uint16_t *out_can_id,
-                       uint16_t *out_baud_k);                                            /* 0x17 */
-/* DISCOVER (0x18): 向所有本机网卡子网定向广播发送, 单播+8601 监听回复.
- * out 一次性填所有回复: "io-edge-hub <ip> v0.1.0_xxxxxx" 一行一条, '\n' 分隔.
+bool UdpManager_SetTime(UdpManager *m, const char *ip, uint32_t unix_ts, uint8_t *out_ok); /* 0x14 */
+/* GET_IP (0x11, broadcast-allowed): 向所有本机网卡子网定向广播发送, 单播+8601 监听回复.
+ * out 一次性填所有回复: "a.b.c.d" 一行一条, '\n' 分隔.
  * out_cap 为 out 缓冲字节. 返回 true=至少发现 1 台. */
 bool UdpManager_Discover(UdpManager *m, char *out, int out_cap, int *out_count);
 bool UdpManager_FactoryReset(UdpManager *m, const char *ip, uint8_t *out_ok);            /* 0x19 */

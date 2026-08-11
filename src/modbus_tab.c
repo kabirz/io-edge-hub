@@ -108,7 +108,6 @@ typedef struct {
 } ModbusTab;
 
 static ModbusTab g_mb;
-static HINSTANCE g_hInst = NULL;
 static HFONT g_hFont = NULL;
 static const wchar_t *MODBUS_TAB_CLASS = L"ioEdgeHubModbusTabCls";
 static BOOL g_classRegistered = FALSE;

@@ -35,11 +35,9 @@
 #define IDC_CFG_MB_BAUD         1031   /* 下拉 */
 #define IDC_CFG_MB_APPLY        1032
 #define IDC_CFG_MB_READ         1033
-/* CAN 参数 */
-#define IDC_CFG_CAN_ID          1040
-#define IDC_CFG_CAN_BAUD        1041
-#define IDC_CFG_CAN_APPLY       1042
-#define IDC_CFG_CAN_READ        1043
+/* 时间设置 */
+#define IDC_CFG_TIME_APPLY      1042   /* 应用本机时间到设备 */
+#define IDC_CFG_TIMER           1070   /* SetTimer id (1s 刷新本机时间显示) */
 /* 运维 */
 #define IDC_CFG_FACTORY         1050
 /* 日志 */

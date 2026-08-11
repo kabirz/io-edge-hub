@@ -3,15 +3,15 @@
  *
  * 单 socket bind 本地任意端口 (源端口由 OS 分配), 对目标 ip:8600 sendto +
  * recvfrom (SO_RCVTIMEO 超时). 覆盖固件 UDP 全部命令:
- *   - 配置 0x10-0x19 (大端多字节字段)
+ *   - 配置 0x10-0x19 (大端多字节字段): SET/GET IP, SET/GET MODBUS, SET_TIME, FACTORY_RESET
  *   - 升级 0x01-0x03 (小端 size/offset/crc) + 0x04 版本 / 0x05 重启
- *   - DISCOVER 0x18: 子网定向广播 + 8601 跨网段回复监听
+ *   - 设备发现 (GET_IP 0x11, 广播允许): 子网定向广播 + 8601 跨网段回复监听
  *
  * 升级流式部分由 tab2 worker 线程顺序调用 FwStart/FwData/FwEnd; tab1 配置命令
  * 为单发单收, UI 阻塞即可. 不复用 handler-receiver 的 RX 线程模型.
  *
  * 协议权威来源:
- *   - applications/io-edge-hub/src/udp.c (0x10-0x1B 应用命令)
+ *   - applications/io-edge-hub/src/udp.c (0x10+ 应用命令)
  *   - libs/udp_fw_upgrade/udp_fw_upgrade.c (0x01-0x05 升级/版本/重启)
  *
  * collect_broadcast_addrs() 与 UdpManager_CRC16_CCITT() 自 handler-receiver
@@ -166,7 +166,7 @@ UdpManager *UdpManager_Create(void)
 	local.sin_family = AF_INET;
 	local.sin_addr.s_addr = INADDR_ANY;
 	bind(m->sock, (struct sockaddr *)&local, sizeof(local));
-	/* 允许广播 (DISCOVER 用) */
+	/* 允许广播 (Discover 用) */
 	BOOL bc = TRUE;
 	setsockopt(m->sock, SOL_SOCKET, SO_BROADCAST, (const char *)&bc, sizeof(bc));
 	return m;
@@ -262,18 +262,15 @@ bool UdpManager_SetIp(UdpManager *m, const char *ip, uint8_t ip4[4], uint8_t *ou
 	return true;
 }
 
-bool UdpManager_GetNet(UdpManager *m, const char *ip, uint8_t ip4[4],
-                       uint8_t *out_slave, uint16_t *out_tcp_port)
+bool UdpManager_GetIp(UdpManager *m, const char *ip, uint8_t ip4[4])
 {
 	uint8_t req[1] = { 0x11 };
 	uint8_t resp[64];
 	int rn = 0;
 	if (!send_recv(m, ip, 0x11, req, 1, resp, &rn, IOEDGE_UDP_TIMEOUT_MS)) return false;
-	/* 回 [0x11][ip 4B][slave 1B][tcp_port 2B BE] */
-	if (rn < 8) { sprintf(m->last_error, "GET_NET 回复过短"); return false; }
-	if (ip4)        memcpy(ip4, resp + 1, 4);
-	if (out_slave)  *out_slave = resp[5];
-	if (out_tcp_port) *out_tcp_port = ((uint16_t)resp[6] << 8) | resp[7];
+	/* 回 [0x11][ip 4B] */
+	if (rn < 5) { sprintf(m->last_error, "GET_IP 回复过短"); return false; }
+	if (ip4) memcpy(ip4, resp + 1, 4);
 	return true;
 }
 
@@ -305,32 +302,19 @@ bool UdpManager_GetModbus(UdpManager *m, const char *ip, uint8_t *out_slave,
 	return true;
 }
 
-bool UdpManager_SetCan(UdpManager *m, const char *ip, uint16_t can_id,
-                       uint16_t baud_k, uint8_t *out_ok)
+/* SET_TIME (0x14): 设 [0x14][unix_ts BE32], 回 [0x14][ok 1B]. */
+bool UdpManager_SetTime(UdpManager *m, const char *ip, uint32_t unix_ts, uint8_t *out_ok)
 {
 	uint8_t req[5];
-	req[0] = 0x16;
-	req[1] = (uint8_t)(can_id >> 8);   /* BE16 */
-	req[2] = (uint8_t)(can_id);
-	req[3] = (uint8_t)(baud_k >> 8);   /* BE16 */
-	req[4] = (uint8_t)(baud_k);
+	req[0] = 0x14;
+	req[1] = (uint8_t)(unix_ts >> 24);   /* BE32 */
+	req[2] = (uint8_t)(unix_ts >> 16);
+	req[3] = (uint8_t)(unix_ts >> 8);
+	req[4] = (uint8_t)(unix_ts);
 	uint8_t resp[64];
 	int rn = 0;
-	if (!send_recv(m, ip, 0x16, req, 5, resp, &rn, IOEDGE_UDP_TIMEOUT_MS)) return false;
+	if (!send_recv(m, ip, 0x14, req, 5, resp, &rn, IOEDGE_UDP_TIMEOUT_MS)) return false;
 	if (out_ok) *out_ok = resp[1];
-	return true;
-}
-
-bool UdpManager_GetCan(UdpManager *m, const char *ip, uint16_t *out_can_id,
-                       uint16_t *out_baud_k)
-{
-	uint8_t req[1] = { 0x17 };
-	uint8_t resp[64];
-	int rn = 0;
-	if (!send_recv(m, ip, 0x17, req, 1, resp, &rn, IOEDGE_UDP_TIMEOUT_MS)) return false;
-	if (rn < 5) { sprintf(m->last_error, "GET_CAN 回复过短"); return false; }
-	if (out_can_id) *out_can_id = ((uint16_t)resp[1] << 8) | resp[2];
-	if (out_baud_k) *out_baud_k = ((uint16_t)resp[3] << 8) | resp[4];
 	return true;
 }
 
@@ -374,17 +358,17 @@ bool UdpManager_Reboot(UdpManager *m, const char *ip)
 }
 
 /* ================================================================
- * DISCOVER (0x18)
+ * 设备发现 (GET_IP 0x11, broadcast-allowed)
  *
- * 向所有本机非回环网卡的子网定向广播地址发 0x18 到 8600. 固件回复路由:
+ * 向所有本机非回环网卡的子网定向广播地址发 0x11 到 8600. 固件回复路由:
  *   - 同子网: 单播回到发送方源端口 (主 socket 收得到)
  *   - 跨子网: 发往有限广播 (INADDR_BROADCAST) 的 8601 → 需单独 bind 8601 监听
- * 回复 payload 为 ASCII "io-edge-hub <ip> v0.1.0_xxxxxx" (≤63B).
+ * 回复 payload 为 4B IP (大端). 上位机格式化为点分十进制 "a.b.c.d".
  *
- * 监听窗口内轮询主 socket 与 8601 socket, 去重 (按回复字符串), 每条一行填入 out.
+ * 监听窗口内轮询主 socket 与 8601 socket, 去重 (按 IP 字符串), 每条一行填入 out.
  * ================================================================ */
 
-/* 把一条 DISCOVER 回复追加到 out (按行). 返回是否新增 (用于计数). */
+/* 把一条设备发现回复追加到 out (按行). 返回是否新增 (用于计数). */
 static int discover_append_line(char *out, int out_cap, int *out_len,
                                 const char *line)
 {
@@ -411,18 +395,15 @@ static int discover_append_line(char *out, int out_cap, int *out_len,
 	return 1;
 }
 
-/* 处理一个 DISCOVER 回复包: 校验首字节, 提取 payload, 追加到 out. */
+/* 处理一个发现回复包: 校验首字节 == 0x11, 提取 4B IP, 格式化为 "a.b.c.d" 追加到 out. */
 static int discover_handle_reply(const uint8_t *buf, int n,
                                  char *out, int out_cap, int *out_len)
 {
-	if (n <= 1 || buf[0] != 0x18) {
+	if (n < 5 || buf[0] != 0x11) {
 		return 0;
 	}
-	/* 固件回复 "io-edge-hub <a.b.c.d> vX.X.X_xxxxxx" (≤63B) */
-	char line[80];
-	int ln = (n - 1 < 63) ? n - 1 : 63;
-	memcpy(line, buf + 1, ln);
-	line[ln] = 0;
+	char line[24];
+	snprintf(line, sizeof(line), "%u.%u.%u.%u", buf[1], buf[2], buf[3], buf[4]);
 	return discover_append_line(out, out_cap, out_len, line);
 }
 
@@ -437,7 +418,7 @@ bool UdpManager_Discover(UdpManager *m, char *out, int out_cap, int *out_count)
 
 	unsigned long bcasts[16];
 	int nb = collect_broadcast_addrs(bcasts, 16);
-	uint8_t req[1] = { 0x18 };
+	uint8_t req[1] = { 0x11 };   /* GET_IP, 固件注册为广播允许命令 */
 
 	/* 发定向广播到所有网卡:8600 */
 	struct sockaddr_in dst = {0};
