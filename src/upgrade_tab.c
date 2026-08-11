@@ -358,10 +358,6 @@ static void on_query_version(void)
 			return;
 		}
 		ok = UdpManager_GetVersion(g_upg.udp, ip, ver, sizeof(ver));
-		if (!ok) {
-			swprintf((wchar_t[160]){0}, 160, L"版本查询失败: %hs",
-			         UdpManager_GetLastError(g_upg.udp));
-		}
 	} else {
 		/* CAN: 必须已连接 */
 		if (!g_upg.can_connected) {
@@ -369,10 +365,6 @@ static void on_query_version(void)
 			return;
 		}
 		ok = CanManager_GetVersion(g_upg.can, ver, sizeof(ver));
-		if (!ok) {
-			swprintf((wchar_t[160]){0}, 160, L"版本查询失败: %hs",
-			         CanManager_GetLastError(g_upg.can));
-		}
 	}
 
 	if (ok) {
@@ -383,9 +375,11 @@ static void on_query_version(void)
 	} else {
 		SetWindowTextW(g_upg.hVersion, L"(查询失败)");
 		wchar_t m[200];
-		swprintf(m, 200, L"版本查询失败: %hs",
-		         can ? CanManager_GetLastError(g_upg.can)
-		             : UdpManager_GetLastError(g_upg.udp));
+		const char *e = can ? CanManager_GetLastError(g_upg.can)
+		                    : UdpManager_GetLastError(g_upg.udp);
+		wchar_t werr[160];
+		MultiByteToWideChar(CP_UTF8, 0, e, -1, werr, 160);
+		swprintf(m, 200, L"版本查询失败: %ls", werr);
 		log_append_ptr(m);
 	}
 }
@@ -441,7 +435,10 @@ static void on_can_connect(void)
 	                                                    : PCAN_BAUD_250K;
 	if (!CanManager_Connect(g_upg.can, channel, bitrate)) {
 		wchar_t m[256];
-		swprintf(m, 256, L"PCAN 连接失败: %hs", CanManager_GetLastError(g_upg.can));
+		const char *e = CanManager_GetLastError(g_upg.can);
+		wchar_t werr[192];
+		MultiByteToWideChar(CP_UTF8, 0, e, -1, werr, 192);
+		swprintf(m, 256, L"PCAN 连接失败: %ls", werr);
 		MessageBoxW(g_upg.hSelf, m, L"连接失败", MB_ICONERROR);
 		return;
 	}
@@ -553,7 +550,10 @@ static DWORD WINAPI can_upgrade_thread(LPVOID arg)
 	                                     kh, permanent, can_progress_handler, NULL);
 	if (!ok) {
 		wchar_t m[256];
-		swprintf(m, 256, L"CAN 升级失败: %hs", CanManager_GetLastError(g_upg.can));
+		const char *e = CanManager_GetLastError(g_upg.can);
+		wchar_t werr[192];
+		MultiByteToWideChar(CP_UTF8, 0, e, -1, werr, 192);
+		swprintf(m, 256, L"CAN 升级失败: %ls", werr);
 		post_log(m);
 		post_done(0);
 		return 0;
@@ -668,7 +668,10 @@ static void on_reboot(void)
 		ok = CanManager_Reboot(g_upg.can);
 		if (!ok) {
 			wchar_t m[160];
-			swprintf(m, 160, L"重启失败: %hs", CanManager_GetLastError(g_upg.can));
+			const char *e = CanManager_GetLastError(g_upg.can);
+			wchar_t werr[128];
+			MultiByteToWideChar(CP_UTF8, 0, e, -1, werr, 128);
+			swprintf(m, 160, L"重启失败: %ls", werr);
 			log_append_ptr(m);
 		} else {
 			log_append_ptr(L"重启命令已发送");

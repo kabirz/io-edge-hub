@@ -358,21 +358,52 @@ bool MbClient_ConnectTcp(MbClient *m, const char *ip, uint16_t port, uint8_t uni
 		sprintf(m->last_error, "TCP socket 失败: %d", WSAGetLastError());
 		return false;
 	}
-	DWORD tmo = 1000;   /* 1s 收发超时, 与 RTU COMMTIMEOUTS 对齐 */
-	setsockopt(m->sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tmo, sizeof(tmo));
-	setsockopt(m->sock, SOL_SOCKET, SO_SNDTIMEO, (const char *)&tmo, sizeof(tmo));
 
 	struct sockaddr_in sa;
 	memset(&sa, 0, sizeof(sa));
 	sa.sin_family = AF_INET;
 	sa.sin_port = htons(port);
 	sa.sin_addr.s_addr = inet_addr(ip);
-	if (connect(m->sock, (struct sockaddr *)&sa, sizeof(sa)) != 0) {
+
+	/* 非阻塞 connect + select 限时 3s, 避免对不可达 IP 阻塞 ~21s 卡死 UI. */
+	unsigned long nb = 1;
+	ioctlsocket(m->sock, FIONBIO, &nb);
+	int r = connect(m->sock, (struct sockaddr *)&sa, sizeof(sa));
+	if (r == SOCKET_ERROR && WSAGetLastError() != WSAEWOULDBLOCK) {
 		sprintf(m->last_error, "TCP 连接失败: %d", WSAGetLastError());
 		closesocket(m->sock);
 		m->sock = INVALID_SOCKET;
 		return false;
 	}
+	if (r != 0) {
+		fd_set wset;
+		FD_ZERO(&wset);
+		FD_SET(m->sock, &wset);
+		struct timeval tv = { .tv_sec = 3, .tv_usec = 0 };
+		int sr = select(0, NULL, &wset, NULL, &tv);
+		if (sr <= 0) {
+			sprintf(m->last_error, sr == 0 ? "TCP 连接超时 (3s)" : "TCP select 失败");
+			closesocket(m->sock);
+			m->sock = INVALID_SOCKET;
+			return false;
+		}
+		int soerr = 0;
+		int sl = sizeof(soerr);
+		getsockopt(m->sock, SOL_SOCKET, SO_ERROR, (char *)&soerr, &sl);
+		if (soerr != 0) {
+			sprintf(m->last_error, "TCP 连接被拒: %d", soerr);
+			closesocket(m->sock);
+			m->sock = INVALID_SOCKET;
+			return false;
+		}
+	}
+	/* 恢复阻塞模式 + 设收发超时 */
+	nb = 0;
+	ioctlsocket(m->sock, FIONBIO, &nb);
+	DWORD tmo = 1000;   /* 1s 收发超时, 与 RTU COMMTIMEOUTS 对齐 */
+	setsockopt(m->sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tmo, sizeof(tmo));
+	setsockopt(m->sock, SOL_SOCKET, SO_SNDTIMEO, (const char *)&tmo, sizeof(tmo));
+
 	m->transport = MB_TCP;
 	m->connected = true;
 	m->unit_id = unit_id;

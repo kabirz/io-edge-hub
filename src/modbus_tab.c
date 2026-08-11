@@ -478,8 +478,14 @@ static void on_connect(void)
 		wchar_t m[128];
 		swprintf(m, 128, L"正在连接 %ls @ %u (uid=%u)...", com_text, baud, uid);
 		log_append(m);
-		if (!MbClient_ConnectRtu(g_mb.mb, com_path, baud, uid)) {
+		/* 真正进入阻塞连接前禁用按钮, 防止重入. 校验类失败在上面已 return. */
+		EnableWindow(g_mb.hConn, FALSE);
+		SetWindowTextW(g_mb.hConn, L"正在连接...");
+		bool ok = MbClient_ConnectRtu(g_mb.mb, com_path, baud, uid);
+		if (!ok) {
 			show_mb_error(L"RTU 连接");
+			SetWindowTextW(g_mb.hConn, L"连接");
+			EnableWindow(g_mb.hConn, TRUE);
 			return;
 		}
 	} else {
@@ -510,8 +516,14 @@ static void on_connect(void)
 		wchar_t m[128];
 		swprintf(m, 128, L"正在连接 %hs:%d (uid=%u)...", ip, port, uid);
 		log_append(m);
-		if (!MbClient_ConnectTcp(g_mb.mb, ip, (uint16_t)port, uid)) {
+		/* 真正进入阻塞连接前禁用按钮, 防止重入. */
+		EnableWindow(g_mb.hConn, FALSE);
+		SetWindowTextW(g_mb.hConn, L"正在连接...");
+		bool ok = MbClient_ConnectTcp(g_mb.mb, ip, (uint16_t)port, uid);
+		if (!ok) {
 			show_mb_error(L"TCP 连接");
+			SetWindowTextW(g_mb.hConn, L"连接");
+			EnableWindow(g_mb.hConn, TRUE);
 			return;
 		}
 	}
