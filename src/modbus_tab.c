@@ -79,7 +79,7 @@ typedef struct {
 	/* 通道单选 */
 	HWND hChanTcp, hChanRtu;
 	/* TCP 行 */
-	HWND hTcpLbl1, hIp[4], hTcpLbl2, hPort, hTcpLbl3, hUidTcp;
+	HWND hTcpLbl1, hIp, hTcpLbl2, hPort, hTcpLbl3, hUidTcp;
 	/* RTU 行 */
 	HWND hRtuLbl1, hCom, hRtuLbl2, hBaud, hRtuLbl3, hUidRtu;
 	/* 连接 + 状态 */
@@ -200,13 +200,27 @@ static int current_channel(void)
 	return (SendMessageW(g_mb.hChanRtu, BM_GETCHECK, 0, 0) == BST_CHECKED) ? 1 : 0;
 }
 
+/* 从单个 IP 输入框读 "a.b.c.d", 写入 ip4[4]. 返回是否合法 (4 段齐全, 每段 0-255). */
+static bool read_ip_edit(HWND hEdit, uint8_t ip4[4])
+{
+	wchar_t buf[32];
+	GetWindowTextW(hEdit, buf, 32);
+	int v[4];
+	if (swscanf(buf, L"%d.%d.%d.%d", &v[0], &v[1], &v[2], &v[3]) != 4) return false;
+	for (int i = 0; i < 4; i++) {
+		if (v[i] < 0 || v[i] > 255) return false;
+		ip4[i] = (uint8_t)v[i];
+	}
+	return true;
+}
+
 /* 切换通道: 显示/隐藏 TCP 与 RTU 子区域. */
 static void apply_channel_visibility(void)
 {
 	int rtu = current_channel();
 	/* TCP 行 */
 	ShowWindow(g_mb.hTcpLbl1, rtu ? SW_HIDE : SW_SHOW);
-	for (int i = 0; i < 4; i++) ShowWindow(g_mb.hIp[i], rtu ? SW_HIDE : SW_SHOW);
+	ShowWindow(g_mb.hIp, rtu ? SW_HIDE : SW_SHOW);
 	ShowWindow(g_mb.hTcpLbl2, rtu ? SW_HIDE : SW_SHOW);
 	ShowWindow(g_mb.hPort,    rtu ? SW_HIDE : SW_SHOW);
 	ShowWindow(g_mb.hTcpLbl3, rtu ? SW_HIDE : SW_SHOW);
@@ -465,21 +479,15 @@ static void on_connect(void)
 		}
 	} else {
 		/* TCP: IP + port + uid */
-		char ip[32];
-		int vip[4];
-		bool bad = false;
-		for (int i = 0; i < 4; i++) {
-			wchar_t wb[8];
-			GetWindowTextW(g_mb.hIp[i], wb, 8);
-			vip[i] = _wtoi(wb);
-			if (vip[i] < 0 || vip[i] > 255) { bad = true; break; }
-		}
-		if (bad) {
-			MessageBoxW(g_mb.hSelf, L"IP 各段必须在 0-255", L"输入错误",
-			            MB_ICONERROR);
+		uint8_t ip4[4];
+		if (!read_ip_edit(g_mb.hIp, ip4)) {
+			MessageBoxW(g_mb.hSelf,
+			            L"目标 IP 格式错误, 请输入 a.b.c.d (每段 0-255)",
+			            L"输入错误", MB_ICONERROR);
 			return;
 		}
-		snprintf(ip, sizeof(ip), "%d.%d.%d.%d", vip[0], vip[1], vip[2], vip[3]);
+		char ip[32];
+		snprintf(ip, sizeof(ip), "%u.%u.%u.%u", ip4[0], ip4[1], ip4[2], ip4[3]);
 		wchar_t wp[16];
 		GetWindowTextW(g_mb.hPort, wp, 16);
 		int port = _wtoi(wp);
@@ -568,16 +576,16 @@ static LRESULT CALLBACK input_wnd_proc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
 	case WM_CREATE: {
 		g_hInputEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", g_input_buf,
 			WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-			10, 10, 300, 22, hWnd, (HMENU)100, g_hInst, NULL);
+			15, 15, 330, 24, hWnd, (HMENU)100, g_hInst, NULL);
 		SendMessageW(g_hInputEdit, WM_SETFONT, (WPARAM)g_hFont, TRUE);
-		HWND hOk = CreateWindowExW(0, L"BUTTON", L"确定",
-			WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-			220, 40, 80, 24, hWnd, (HMENU)IDOK, g_hInst, NULL);
-		SendMessageW(hOk, WM_SETFONT, (WPARAM)g_hFont, TRUE);
 		HWND hCancel = CreateWindowExW(0, L"BUTTON", L"取消",
 			WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-			130, 40, 80, 24, hWnd, (HMENU)IDCANCEL, g_hInst, NULL);
+			185, 50, 80, 26, hWnd, (HMENU)IDCANCEL, g_hInst, NULL);
 		SendMessageW(hCancel, WM_SETFONT, (WPARAM)g_hFont, TRUE);
+		HWND hOk = CreateWindowExW(0, L"BUTTON", L"确定",
+			WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | BS_DEFPUSHBUTTON,
+			275, 50, 80, 26, hWnd, (HMENU)IDOK, g_hInst, NULL);
+		SendMessageW(hOk, WM_SETFONT, (WPARAM)g_hFont, TRUE);
 		return 0;
 	}
 	case WM_COMMAND:
@@ -621,9 +629,21 @@ static bool prompt_uint_modal(const wchar_t *title, unsigned *out_val)
 	g_input_confirmed = false;
 	g_hInputDlg = CreateWindowExW(WS_EX_DLGMODALFRAME, CLS, title,
 		WS_POPUP | WS_CAPTION | WS_SYSMENU,
-		CW_USEDEFAULT, CW_USEDEFAULT, 330, 100,
+		0, 0, 360, 130,
 		g_mb.hSelf, NULL, g_hInst, NULL);
 	if (!g_hInputDlg) return false;
+
+	/* 弹窗居中到主窗口 (主窗口不可见时退回桌面). 避免系统级联默认落左上角. */
+	RECT rcDlg, rcParent;
+	GetWindowRect(g_hInputDlg, &rcDlg);
+	HWND hParent = IsWindow(g_hMain) ? g_hMain : GetDesktopWindow();
+	GetWindowRect(hParent, &rcParent);
+	int dlgW = rcDlg.right - rcDlg.left;
+	int dlgH = rcDlg.bottom - rcDlg.top;
+	int px = rcParent.left + ((rcParent.right - rcParent.left) - dlgW) / 2;
+	int py = rcParent.top  + ((rcParent.bottom - rcParent.top) - dlgH) / 2;
+	SetWindowPos(g_hInputDlg, NULL, px, py, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+
 	EnableWindow(g_mb.hSelf, FALSE);
 	ShowWindow(g_hInputDlg, SW_SHOW);
 	UpdateWindow(g_hInputDlg);
@@ -820,11 +840,9 @@ static void create_controls(HWND hWnd)
 
 	/* 行2: TCP 行 (默认显示) — IP + 端口 + uid */
 	g_mb.hTcpLbl1 = create_label(L"目标 IP:", gx + 12, 60, 50, 14);
-	int ip_ids[4] = { IDC_MB_IP1, IDC_MB_IP2, IDC_MB_IP3, IDC_MB_IP4 };
-	create_ip_row(gx + 64, 56, ip_ids, g_mb.hIp);
+	g_mb.hIp = create_edit(gx + 64, 56, 140, 22, IDC_MB_IP1, 0);
 	/* 默认填 192.168.1.100 */
-	wchar_t ipdef[4][8] = { L"192", L"168", L"1", L"100" };
-	for (int i = 0; i < 4; i++) SetWindowTextW(g_mb.hIp[i], ipdef[i]);
+	SetWindowTextW(g_mb.hIp, L"192.168.1.100");
 	g_mb.hTcpLbl2 = create_label(L"端口:", gx + 230, 60, 32, 14);
 	g_mb.hPort = create_edit(gx + 262, 56, 48, 22, IDC_MB_PORT, ES_NUMBER);
 	SetWindowTextW(g_mb.hPort, L"502");
