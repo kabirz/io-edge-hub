@@ -145,8 +145,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, PWSTR cmdLine, int sho
 
 	g_hMain = CreateWindowExW(0, wc.lpszClassName, L"数据采集卡软件 v" APP_VERSION_W,
 		WS_OVERLAPPEDWINDOW & ~WS_THICKFRAME & ~WS_MAXIMIZEBOX,
-		CW_USEDEFAULT, CW_USEDEFAULT, 800, 840,
+		0, 0, 800, 840,
 		NULL, NULL, hInstance, NULL);
+
+	/* 主窗口居中到屏幕工作区 (排除任务栏). 在 ShowWindow 之前调整, 避免可见位置跳变. */
+	RECT rcWnd, rcWork;
+	GetWindowRect(g_hMain, &rcWnd);
+	SystemParametersInfoW(SPI_GETWORKAREA, 0, &rcWork, 0);
+	int wndW = rcWnd.right - rcWnd.left;
+	int wndH = rcWnd.bottom - rcWnd.top;
+	int cx = rcWork.left + ((rcWork.right - rcWork.left) - wndW) / 2;
+	int cy = rcWork.top  + ((rcWork.bottom - rcWork.top) - wndH) / 2;
+	SetWindowPos(g_hMain, NULL, cx, cy, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+
 	ShowWindow(g_hMain, show);
 	UpdateWindow(g_hMain);
 
