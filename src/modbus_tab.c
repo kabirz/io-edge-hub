@@ -15,18 +15,22 @@
  *   - 寄存器表 ListView: 18 holding + 6 input, 双击写, "查询选中" 读单行.
  *
  * 自动刷新: 勾选 → SetTimer(hSelf, IDC_MB_TIMER, interval, NULL);
- * WM_TIMER 只刷 DI/DO/AI 三块面板 (不动 holding 表, 避免干扰手工写寄存器).
+ * WM_TIMER 刷新 DI/DO/AI 面板 + 全部保持/输入寄存器表 (同一 UI 线程顺序执行).
  */
 #include "modbus_client.h"   /* 须先于 windows.h 拉 winsock2.h (避免 winsock1 冲突) */
 #include "modbus_tab.h"
 #include "resource.h"
 #include <commctrl.h>
+#include <setupapi.h>
+#include <devguid.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <wchar.h>
+
+#pragma comment(lib, "setupapi.lib")
 
 /* ===== 寄存器元数据表 (spec §7) ===== */
 
@@ -48,8 +52,8 @@ static const RegMeta g_regs[] = {
 	{0x04, L"AI采样间隔ms", false, RW_RW},
 	{0x05, L"历史保存开关", false, RW_RW},
 	{0x06, L"CAN业务帧ID", false, RW_RW},
-	{0x07, L"CAN波特率(k)", false, RW_RW},
-	{0x08, L"RS485波特率", false, RW_RW},
+	{0x07, L"CAN波特率(kbps)", false, RW_RW},
+	{0x08, L"RS485波特率(bps)", false, RW_RW},
 	{0x09, L"Modbus从机ID", false, RW_RW},
 	{0x0A, L"IP第1字节",  false, RW_RW},
 	{0x0B, L"IP第2字节",  false, RW_RW},
@@ -115,6 +119,40 @@ static BOOL g_classRegistered = FALSE;
 /* 串口与波特率选项 */
 static const int g_bauds[] = { 4800, 9600, 19200, 38400, 57600, 115200 };
 #define BAUD_COUNT (int)(sizeof(g_bauds) / sizeof(g_bauds[0]))
+
+/* 枚举系统中实际存在的 COM 口填入下拉框 (SetupAPI, 而非硬编码 COM1..COM32).
+ * 无串口时下拉为空 (连接时会提示先选择串口). */
+static void enumerate_com_ports(HWND hCombo)
+{
+	SendMessageW(hCombo, CB_RESETCONTENT, 0, 0);
+	HDEVINFO hdevinfo = SetupDiGetClassDevsW(&GUID_DEVCLASS_PORTS, NULL, NULL,
+	                                         DIGCF_PRESENT);
+	if (hdevinfo == INVALID_HANDLE_VALUE) return;
+
+	SP_DEVINFO_DATA devdata;
+	memset(&devdata, 0, sizeof(devdata));
+	devdata.cbSize = sizeof(devdata);
+
+	for (DWORD idx = 0; SetupDiEnumDeviceInfo(hdevinfo, idx, &devdata); idx++) {
+		HKEY hkey = SetupDiOpenDevRegKey(hdevinfo, &devdata, DICS_FLAG_GLOBAL, 0,
+		                                 DIREG_DEV, KEY_READ);
+		if (hkey == INVALID_HANDLE_VALUE) continue;
+		wchar_t portname[64] = {0};
+		DWORD type = 0, size = sizeof(portname);
+		if (RegQueryValueExW(hkey, L"PortName", NULL, &type,
+		                     (LPBYTE)portname, &size) == ERROR_SUCCESS &&
+		    type == REG_SZ && portname[0] != L'\0') {
+			SendMessageW(hCombo, CB_ADDSTRING, 0, (LPARAM)portname);
+		}
+		RegCloseKey(hkey);
+	}
+	SetupDiDestroyDeviceInfoList(hdevinfo);
+
+	/* 默认选中第一个实际存在的 COM 口 */
+	if (SendMessageW(hCombo, CB_GETCOUNT, 0, 0) > 0) {
+		SendMessageW(hCombo, CB_SETCURSEL, 0, 0);
+	}
+}
 
 /* ===== 控件创建辅助 (与 config_tab.c / upgrade_tab.c 一致) ===== */
 
@@ -185,9 +223,13 @@ static void log_append(const wchar_t *msg)
 	SendMessageW(g_mb.hLog, EM_REPLACESEL, 0, (LPARAM)line);
 }
 
+/* 传输层检测到连接断开时更新 UI 状态 (定义在下方, 先声明). */
+static void on_link_lost(void);
+
 /* 显示 Modbus 传输错误 (弹框 + 日志).
  * MbClient_GetLastError 返回 UTF-8 char* (MSVC /utf-8 编译), 必须用
- * MultiByteToWideChar(CP_UTF8) 转宽串, 不能用 swprintf 的 %hs (按 CP_ACP 解). */
+ * MultiByteToWideChar(CP_UTF8) 转宽串, 不能用 swprintf 的 %hs (按 CP_ACP 解).
+ * 若传输层已检测到连接断开: 只更新连接状态并记日志, 不弹框 (避免连环弹窗). */
 static void show_mb_error(const wchar_t *op)
 {
 	const char *e = MbClient_GetLastError(g_mb.mb);
@@ -196,6 +238,10 @@ static void show_mb_error(const wchar_t *op)
 	wchar_t m[256];
 	swprintf(m, 256, L"%ls 失败: %ls", op, werr);
 	log_append(m);
+	if (g_mb.connected && !MbClient_IsConnected(g_mb.mb)) {
+		on_link_lost();
+		return;
+	}
 	MessageBoxW(g_mb.hSelf, m, L"错误", MB_ICONERROR);
 }
 
@@ -253,10 +299,23 @@ static void set_conn_state(bool is_conn)
 		SetWindowTextW(g_mb.hConn, L"连接");
 		EnableWindow(g_mb.hConn, TRUE);
 		EnableWindow(g_mb.hRefreshAll, FALSE);
+		/* 断开即停止自动刷新 (手动断开或对端断开都一样), 并复位勾选 */
+		if (g_mb.auto_timer) {
+			KillTimer(g_mb.hSelf, IDC_MB_TIMER);
+			g_mb.auto_timer = false;
+		}
+		SendMessageW(g_mb.hAutoRef, BM_SETCHECK, BST_UNCHECKED, 0);
 		/* 连接断开后 LED/DO/AI 文本失效 */
 		g_mb.di_valid = false;
 		InvalidateRect(g_mb.hSelf, NULL, FALSE);
 	}
+}
+
+/* 传输层检测到连接断开 (TCP 对端关闭等): 更新 UI 连接状态, 不再弹窗. */
+static void on_link_lost(void)
+{
+	set_conn_state(false);
+	log_append(L"连接已断开, 自动刷新已停止");
 }
 
 /* R/W 列显示文字 */
@@ -319,7 +378,7 @@ static void format_reg_value(int row_idx, uint16_t value, wchar_t *out, int cap)
 	case 0x03: swprintf(out, cap, L"%u ms", value); return;  /* DI 采样间隔 */
 	case 0x04: swprintf(out, cap, L"%u ms", value); return;  /* AI 采样间隔 */
 	case 0x06: swprintf(out, cap, L"0x%04X", value); return; /* CAN 业务帧 ID */
-	case 0x07: swprintf(out, cap, L"%u k", value); return;   /* CAN 波特率 (kbps) */
+	case 0x07: swprintf(out, cap, L"%u kbps", value); return; /* CAN 波特率 */
 	case 0x08: swprintf(out, cap, L"%u bps", value); return; /* RS485 波特率 */
 	case 0x0E: /* 时间戳高字 */
 	case 0x0F: swprintf(out, cap, L"0x%04X", value); return; /* 时间戳低字 */
@@ -337,12 +396,12 @@ static void update_listview_row(int row_idx, uint16_t value)
 
 /* ===== 面板刷新 ===== */
 
-/* 刷新 DI 面板: ReadDiscreteInputs(0,16) → 缓存位图 + 触发重绘. */
+/* 刷新 DI 面板: ReadDiscreteInputs(0,16) → 缓存位图 + 触发重绘. 失败仅记日志不弹框. */
 static bool refresh_di(void)
 {
 	uint8_t bits[DI_COUNT];
 	if (!MbClient_ReadDiscreteInputs(g_mb.mb, 0, DI_COUNT, bits)) {
-		show_mb_error(L"读 DI (FC02)");
+		log_append(L"读 DI (FC02) 失败");
 		g_mb.di_valid = false;
 		return false;
 	}
@@ -355,12 +414,12 @@ static bool refresh_di(void)
 	return true;
 }
 
-/* 刷新 DO 面板: ReadCoils(0,8) → 更新按钮文字. */
+/* 刷新 DO 面板: ReadCoils(0,8) → 更新按钮文字. 失败仅记日志不弹框. */
 static bool refresh_do(void)
 {
 	uint8_t bits[DO_COUNT];
 	if (!MbClient_ReadCoils(g_mb.mb, 0, DO_COUNT, bits)) {
-		show_mb_error(L"读 DO (FC01)");
+		log_append(L"读 DO (FC01) 失败");
 		return false;
 	}
 	for (int i = 0; i < DO_COUNT; i++) {
@@ -372,12 +431,12 @@ static bool refresh_do(void)
 }
 
 /* 刷新 AI 面板: ReadInput(1,4) → 更新 4 个文本.
- * 注: input offset 1-4 即 AI1-AI4 (offset 0 是固件版本). */
+ * 注: input offset 1-4 即 AI1-AI4 (offset 0 是固件版本). 失败仅记日志不弹框. */
 static bool refresh_ai(void)
 {
 	uint16_t regs[AI_COUNT];
 	if (!MbClient_ReadInput(g_mb.mb, 1, AI_COUNT, regs)) {
-		show_mb_error(L"读 AI (FC04)");
+		log_append(L"读 AI (FC04) 失败");
 		return false;
 	}
 	for (int i = 0; i < AI_COUNT; i++) {
@@ -760,19 +819,32 @@ static void on_refresh_all(void)
 	bool b = refresh_di();
 	bool c = refresh_ai();
 	refresh_reg_table();
+	/* 刷新中发现连接断开: 停止自动刷新并复位连接状态 (不弹框) */
+	if (!MbClient_IsConnected(g_mb.mb)) {
+		on_link_lost();
+		return;
+	}
 	wchar_t m[96];
 	swprintf(m, 96, L"刷新完成 (DO=%ls, DI=%ls, AI=%ls, 表已更新)",
 	         a ? L"OK" : L"失败", b ? L"OK" : L"失败", c ? L"OK" : L"失败");
 	log_append(m);
 }
 
-/* 自动刷新 WM_TIMER 回调: 只刷 DI/DO/AI (不动 holding 表). */
+/* 自动刷新 WM_TIMER 回调: 刷 DI/DO/AI + 全部保持/输入寄存器表.
+ * 全程不弹窗: 失败仅记日志, 若传输层检测到连接断开则停止自动刷新. */
 static void on_timer(void)
 {
 	if (!g_mb.connected) return;
-	refresh_do();
-	refresh_di();
-	refresh_ai();
+	bool ok = refresh_do();
+	ok = refresh_di() && ok;
+	ok = refresh_ai() && ok;
+	/* 连接仍有效时同时刷新全部保持/输入寄存器 */
+	if (MbClient_IsConnected(g_mb.mb)) {
+		refresh_reg_table();
+	}
+	if (!ok && !MbClient_IsConnected(g_mb.mb)) {
+		on_link_lost();
+	}
 }
 
 /* 切换自动刷新开关. */
@@ -874,12 +946,8 @@ static void create_controls(HWND hWnd)
 		WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
 		gx + 44, 56, 90, 240, hWnd, (HMENU)(INT_PTR)IDC_MB_COM, g_hInst, NULL);
 	SendMessageW(g_mb.hCom, WM_SETFONT, (WPARAM)g_hFont, TRUE);
-	for (int i = 1; i <= 32; i++) {
-		wchar_t buf[16];
-		swprintf(buf, 16, L"COM%d", i);
-		SendMessageW(g_mb.hCom, CB_ADDSTRING, 0, (LPARAM)buf);
-	}
-	SendMessageW(g_mb.hCom, CB_SETCURSEL, 2, 0); /* 默认 COM3 */
+	/* 自动枚举实际存在的 COM 口 (非硬编码 COM1..32) */
+	enumerate_com_ports(g_mb.hCom);
 	g_mb.hRtuLbl2 = create_label(L"波特率:", gx + 144, 60, 44, 14);
 	g_mb.hBaud = CreateWindowExW(0, L"COMBOBOX", L"",
 		WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,

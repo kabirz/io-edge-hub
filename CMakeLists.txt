@@ -37,6 +37,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     gdi32
     ws2_32
     iphlpapi
+    setupapi
 )
 
 if(MINGW)
