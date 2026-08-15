@@ -77,12 +77,12 @@ static BOOL g_classRegistered = FALSE;
 
 /* PCAN 波特率 (与 pcan_loader.h BTR 寄存器值对应, can_manager 直传) */
 static const struct { const wchar_t *label; uint32_t btr; } g_bauds[] = {
-	{ L"250k (默认)", PCAN_BAUD_250K },
-	{ L"500k",        PCAN_BAUD_500K },
-	{ L"1M",          PCAN_BAUD_1M   },
-	{ L"125k",        PCAN_BAUD_125K },
-	{ L"100k",        PCAN_BAUD_100K },
-	{ L"50k",         PCAN_BAUD_50K  },
+	{ L"250 kbps (默认)", PCAN_BAUD_250K },
+	{ L"500 kbps",        PCAN_BAUD_500K },
+	{ L"1000 kbps",       PCAN_BAUD_1M   },
+	{ L"125 kbps",        PCAN_BAUD_125K },
+	{ L"100 kbps",        PCAN_BAUD_100K },
+	{ L"50 kbps",         PCAN_BAUD_50K  },
 };
 #define BAUD_COUNT (int)(sizeof(g_bauds) / sizeof(g_bauds[0]))
 
