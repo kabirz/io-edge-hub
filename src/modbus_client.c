@@ -84,6 +84,22 @@ static int rtu_char_time_ms(uint32_t baud)
 	return ms < 1 ? 1 : ms;
 }
 
+/* TCP 错误码是否表示连接已死亡 (对端关闭/RST/本地不可用). 超时(WSAETIMEDOUT)等
+ * 只代表对方未及时回复, 不算断开. 返回 true 时调用方应置 m->connected=false. */
+static bool tcp_is_dead_error(int err)
+{
+	switch (err) {
+	case WSAECONNRESET:
+	case WSAECONNABORTED:
+	case WSAENOTCONN:
+	case WSAENETRESET:
+	case WSAESHUTDOWN:
+		return true;
+	default:
+		return false;
+	}
+}
+
 /* ================================================================
  * PDU 传输层 mb_transact
  *
@@ -111,7 +127,12 @@ static int mb_transact(MbClient *m, const uint8_t *pdu, int pdulen,
 		int adulen = 7 + pdulen;
 
 		if (send(m->sock, (const char *)adu, adulen, 0) != adulen) {
-			sprintf(m->last_error, "TCP 发送失败");
+			if (tcp_is_dead_error(WSAGetLastError())) {
+				sprintf(m->last_error, "连接已断开 (发送失败)");
+				m->connected = false;
+			} else {
+				sprintf(m->last_error, "TCP 发送失败");
+			}
 			return 0;
 		}
 
@@ -119,8 +140,18 @@ static int mb_transact(MbClient *m, const uint8_t *pdu, int pdulen,
 		int n = 0;
 		while (n < 6) {
 			int r = recv(m->sock, (char *)adu + n, 6 - n, 0);
-			if (r <= 0) {
-				sprintf(m->last_error, "TCP 响应超时");
+			if (r == 0) {
+				sprintf(m->last_error, "对端已断开连接");
+				m->connected = false;
+				return 0;
+			}
+			if (r < 0) {
+				if (tcp_is_dead_error(WSAGetLastError())) {
+					sprintf(m->last_error, "连接已断开 (接收失败)");
+					m->connected = false;
+				} else {
+					sprintf(m->last_error, "TCP 响应超时");
+				}
 				return 0;
 			}
 			n += r;
@@ -135,8 +166,18 @@ static int mb_transact(MbClient *m, const uint8_t *pdu, int pdulen,
 		int got = 0;
 		while (got < rlen) {
 			int r = recv(m->sock, (char *)out_pdu + got, rlen - got, 0);
-			if (r <= 0) {
-				sprintf(m->last_error, "TCP 响应中断");
+			if (r == 0) {
+				sprintf(m->last_error, "对端已断开连接");
+				m->connected = false;
+				return 0;
+			}
+			if (r < 0) {
+				if (tcp_is_dead_error(WSAGetLastError())) {
+					sprintf(m->last_error, "连接已断开 (接收失败)");
+					m->connected = false;
+				} else {
+					sprintf(m->last_error, "TCP 响应中断");
+				}
 				return 0;
 			}
 			got += r;
