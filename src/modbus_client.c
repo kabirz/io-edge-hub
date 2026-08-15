@@ -597,10 +597,11 @@ bool MbClient_WriteSingleCoil(MbClient *m, uint16_t addr, bool on)
 		if (m) sprintf(m->last_error, "Modbus 未连接");
 		return false;
 	}
-	uint8_t pdu[6] = { 0x05, (uint8_t)(addr >> 8), (uint8_t)addr,
+	/* FC05 PDU = [0x05][addr_hi][addr_lo][FF00/0000] = 5B (fc + 4B data) */
+	uint8_t pdu[5] = { 0x05, (uint8_t)(addr >> 8), (uint8_t)addr,
 	                   (uint8_t)(on ? 0xFF : 0x00), 0x00 };
 	uint8_t resp[16];
-	int n = mb_transact(m, pdu, 6, resp, sizeof(resp));
+	int n = mb_transact(m, pdu, 5, resp, sizeof(resp));
 	return check_normal(m, resp, n);
 }
 
@@ -610,10 +611,11 @@ bool MbClient_WriteSingleReg(MbClient *m, uint16_t addr, uint16_t value)
 		if (m) sprintf(m->last_error, "Modbus 未连接");
 		return false;
 	}
-	uint8_t pdu[6] = { 0x06, (uint8_t)(addr >> 8), (uint8_t)addr,
+	/* FC06 PDU = [0x06][addr_hi][addr_lo][val_hi][val_lo] = 5B (fc + 4B data) */
+	uint8_t pdu[5] = { 0x06, (uint8_t)(addr >> 8), (uint8_t)addr,
 	                   (uint8_t)(value >> 8), (uint8_t)value };
 	uint8_t resp[16];
-	int n = mb_transact(m, pdu, 6, resp, sizeof(resp));
+	int n = mb_transact(m, pdu, 5, resp, sizeof(resp));
 	return check_normal(m, resp, n);
 }
 
