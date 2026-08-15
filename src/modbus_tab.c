@@ -859,8 +859,8 @@ static void create_controls(HWND hWnd)
 	/* 行2: TCP 行 (默认显示) — IP + 端口 + uid */
 	g_mb.hTcpLbl1 = create_label(L"目标 IP:", gx + 12, 60, 50, 14);
 	g_mb.hIp = create_edit(gx + 64, 56, 140, 22, IDC_MB_IP1, 0);
-	/* 默认填 192.168.1.100 */
-	SetWindowTextW(g_mb.hIp, L"192.168.1.100");
+	/* 默认填 192.168.12.101 */
+	SetWindowTextW(g_mb.hIp, L"192.168.12.101");
 	g_mb.hTcpLbl2 = create_label(L"端口:", gx + 230, 60, 32, 14);
 	g_mb.hPort = create_edit(gx + 262, 56, 48, 22, IDC_MB_PORT, ES_NUMBER);
 	SetWindowTextW(g_mb.hPort, L"502");

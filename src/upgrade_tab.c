@@ -38,10 +38,12 @@ typedef struct {
 	HWND hSelf;
 	/* 通道单选 */
 	HWND hChanUdp, hChanCan;
-	/* UDP 行: 目标 IP 4 段 + 测试复选框 + 标签 */
-	HWND hUdpLbl, hIp[4], hTest;
-	/* CAN 行: 设备下拉 + 波特率下拉 + 刷新按钮 + 连接按钮 */
-	HWND hCanLbl1, hCanDev, hCanLbl2, hCanBaud, hCanRefresh, hCanConn;
+	/* 连接/断开 (UDP/CAN 通用) */
+	HWND hConn;
+	/* UDP 行: 目标 IP (单框) + 标签 */
+	HWND hUdpLbl, hIp;
+	/* CAN 行: 设备下拉 + 波特率下拉 + 刷新按钮 */
+	HWND hCanLbl1, hCanDev, hCanLbl2, hCanBaud, hCanRefresh;
 	/* 版本信息行: label + 查询按钮 */
 	HWND hVerLbl, hVersion, hGetVer;
 	/* 文件 */
@@ -51,6 +53,7 @@ typedef struct {
 	/* manager */
 	UdpManager *udp;
 	CanManager *can;
+	bool udp_connected;   /* UDP 连接状态 (连接后启用查询/升级/重启) */
 	bool can_connected;
 	bool can_detected;
 	int  can_channel;
@@ -61,7 +64,6 @@ typedef struct {
 	bool has_keyhash;
 	/* worker 输入 (UI 线程在 CreateThread 前缓存, worker 只读) */
 	char  cur_ip[32];
-	bool  cur_test;
 	bool  cur_permanent;
 	/* 取消标志 + 线程句柄 */
 	volatile LONG cancel;
@@ -122,22 +124,6 @@ static HWND create_groupbox(const wchar_t *text, int x, int y, int w, int h)
 	return hw;
 }
 
-/* 创建 4 段 IP 编辑框 (ES_NUMBER + 限 3 字符). 返回末尾 x 坐标. */
-static int create_ip_row(int x, int y, int ids[4], HWND out_hwnd[4])
-{
-	int seg_w = 34, dot_w = 6, gap = 2;
-	for (int i = 0; i < 4; i++) {
-		out_hwnd[i] = create_edit(x, y, seg_w, 22, ids[i], ES_NUMBER);
-		SendMessageW(out_hwnd[i], EM_SETLIMITTEXT, 3, 0);
-		x += seg_w;
-		if (i < 3) {
-			create_label(L".", x, y + 3, dot_w, 16);
-			x += dot_w + gap;
-		}
-	}
-	return x;
-}
-
 /* ===== 业务辅助 ===== */
 
 /* 当前选中的通道: 0=UDP, 1=CAN */
@@ -146,29 +132,17 @@ static int current_channel(void)
 	return (SendMessageW(g_upg.hChanCan, BM_GETCHECK, 0, 0) == BST_CHECKED) ? 1 : 0;
 }
 
-/* 按 CAN 设备检测/连接状态刷新按钮可用性.
- * - CAN 通道且未检测到设备: 连接/查询版本/重启 全禁用
- * - CAN 通道且已检测到但未连接: 仅连接可点
- * - CAN 通道且已连接: 连接(变断开)/查询版本/重启 均可点
- * - UDP 通道: 恢复默认可用 (UDP 无连接概念, 直接走目标 IP) */
-static void update_can_buttons(void)
+/* 按当前通道连接状态刷新按钮可用性.
+ * - 未连接: 查询版本/开始升级/重启 全禁用 (连接按钮始终可用)
+ * - 已连接: 查询版本/重启 恢复可用; 开始升级 还需已选有效固件文件. */
+static void update_button_state(void)
 {
 	int can = current_channel();
-	if (!can) {
-		EnableWindow(g_upg.hCanConn, TRUE);
-		EnableWindow(g_upg.hGetVer, TRUE);
-		EnableWindow(g_upg.hReboot, TRUE);
-		return;
-	}
-	if (!g_upg.can_detected) {
-		EnableWindow(g_upg.hCanConn, FALSE);
-		EnableWindow(g_upg.hGetVer, FALSE);
-		EnableWindow(g_upg.hReboot, FALSE);
-		return;
-	}
-	EnableWindow(g_upg.hCanConn, TRUE);
-	EnableWindow(g_upg.hGetVer, g_upg.can_connected);
-	EnableWindow(g_upg.hReboot, g_upg.can_connected);
+	bool conn = can ? g_upg.can_connected : g_upg.udp_connected;
+	EnableWindow(g_upg.hConn, TRUE);
+	EnableWindow(g_upg.hGetVer, conn);
+	EnableWindow(g_upg.hReboot, conn);
+	EnableWindow(g_upg.hStart, conn && g_upg.img ? TRUE : FALSE);
 }
 
 /* 切换通道: 显示/隐藏 UDP 与 CAN 子区域. */
@@ -177,16 +151,17 @@ static void apply_channel_visibility(void)
 	int can = current_channel();
 	/* UDP 行 */
 	ShowWindow(g_upg.hUdpLbl, can ? SW_HIDE : SW_SHOW);
-	for (int i = 0; i < 4; i++) ShowWindow(g_upg.hIp[i], can ? SW_HIDE : SW_SHOW);
-	ShowWindow(g_upg.hTest, can ? SW_HIDE : SW_SHOW);
+	ShowWindow(g_upg.hIp, can ? SW_HIDE : SW_SHOW);
 	/* CAN 行 */
 	ShowWindow(g_upg.hCanLbl1,   can ? SW_SHOW : SW_HIDE);
 	ShowWindow(g_upg.hCanDev,    can ? SW_SHOW : SW_HIDE);
 	ShowWindow(g_upg.hCanLbl2,   can ? SW_SHOW : SW_HIDE);
 	ShowWindow(g_upg.hCanBaud,   can ? SW_SHOW : SW_HIDE);
 	ShowWindow(g_upg.hCanRefresh, can ? SW_SHOW : SW_HIDE);
-	ShowWindow(g_upg.hCanConn,   can ? SW_SHOW : SW_HIDE);
-	update_can_buttons();
+	/* 连接按钮文字随当前通道连接状态 */
+	SetWindowTextW(g_upg.hConn,
+		(can ? g_upg.can_connected : g_upg.udp_connected) ? L"断开" : L"连接");
+	update_button_state();
 }
 
 /* UI 线程: 设置 fileinfo 静态文本 (默认黑色). */
@@ -195,17 +170,18 @@ static void set_fileinfo(const wchar_t *msg)
 	SetWindowTextW(g_upg.hFileInfo, msg);
 }
 
-/* 从 4 个 IP EDIT 拼点分十进制窄串到 out. 段非数字按 0 处理. */
-static void read_ip_to_str(HWND ip_edits[4], char *out, int cap)
+/* 从单个 IP 输入框读 "a.b.c.d", 写入 ip4[4]. 返回是否合法 (4 段齐全, 每段 0-255). */
+static bool read_ip_edit(HWND hEdit, uint8_t ip4[4])
 {
+	wchar_t buf[32];
+	GetWindowTextW(hEdit, buf, 32);
 	int v[4];
+	if (swscanf(buf, L"%d.%d.%d.%d", &v[0], &v[1], &v[2], &v[3]) != 4) return false;
 	for (int i = 0; i < 4; i++) {
-		wchar_t buf[8];
-		GetWindowTextW(ip_edits[i], buf, 8);
-		v[i] = _wtoi(buf);
-		if (v[i] < 0 || v[i] > 255) v[i] = 0;
+		if (v[i] < 0 || v[i] > 255) return false;
+		ip4[i] = (uint8_t)v[i];
 	}
-	snprintf(out, cap, "%d.%d.%d.%d", v[0], v[1], v[2], v[3]);
+	return true;
 }
 
 /* 日志框追加一行 (UI 线程: WM_APP_UPG_LOG 处理时调用). msg 已是用户字符串. */
@@ -329,7 +305,7 @@ static void on_browse(void)
 	         (unsigned)size,
 	         has_kh ? L"已提取" : L"缺失(将跳过校验)");
 	set_fileinfo(info);
-	EnableWindow(g_upg.hStart, TRUE);
+	update_button_state();
 }
 
 /* ===== 版本查询 (UI 线程) ===== */
@@ -344,19 +320,14 @@ static void on_query_version(void)
 	int can = current_channel();
 
 	if (!can) {
-		/* UDP: 取目标 IP */
+		/* UDP: 取目标 IP (单框) */
 		char ip[64] = {0};
-		read_ip_to_str(g_upg.hIp, ip, sizeof(ip));
-		/* 空段当 0, 这里要求 4 段都填 */
-		bool ip_empty = false;
-		for (int i = 0; i < 4; i++) {
-			wchar_t buf[8];
-			if (GetWindowTextW(g_upg.hIp[i], buf, 8) == 0) { ip_empty = true; break; }
-		}
-		if (ip_empty) {
+		uint8_t ip4[4];
+		if (!read_ip_edit(g_upg.hIp, ip4)) {
 			SetWindowTextW(g_upg.hVersion, L"(请先填目标 IP)");
 			return;
 		}
+		snprintf(ip, sizeof(ip), "%d.%d.%d.%d", ip4[0], ip4[1], ip4[2], ip4[3]);
 		ok = UdpManager_GetVersion(g_upg.udp, ip, ver, sizeof(ver));
 	} else {
 		/* CAN: 必须已连接 */
@@ -406,7 +377,7 @@ static void refresh_can_device(void)
 		g_upg.can_detected = false;
 		log_append_ptr(L"已刷新: 未检测到 PCAN-USB 设备");
 	}
-	update_can_buttons();
+	update_button_state();
 }
 
 /* 连接/断开 PCAN. 切换按钮文字 + 状态. */
@@ -416,11 +387,11 @@ static void on_can_connect(void)
 		CanManager_Disconnect(g_upg.can);
 		g_upg.can_connected = false;
 		g_upg.can_channel = -1;
-		SetWindowTextW(g_upg.hCanConn, L"连接");
+		SetWindowTextW(g_upg.hConn, L"连接");
 		EnableWindow(g_upg.hCanDev, TRUE);
 		EnableWindow(g_upg.hCanBaud, TRUE);
 		log_append_ptr(L"PCAN 已断开");
-		update_can_buttons();
+		update_button_state();
 		return;
 	}
 	int sel = (int)SendMessageW(g_upg.hCanDev, CB_GETCURSEL, 0, 0);
@@ -444,17 +415,68 @@ static void on_can_connect(void)
 	}
 	g_upg.can_connected = true;
 	g_upg.can_channel = channel;
-	SetWindowTextW(g_upg.hCanConn, L"断开");
+	SetWindowTextW(g_upg.hConn, L"断开");
 	log_append_ptr(L"PCAN 已连接, 查询设备版本...");
 	EnableWindow(g_upg.hCanDev, FALSE);
 	EnableWindow(g_upg.hCanBaud, FALSE);
 	/* 连接成功后启用查询版本/重启, 并自动查询一次设备版本 */
-	update_can_buttons();
+	update_button_state();
 	on_query_version();
 }
 
+/* ===== UDP 连接 (UI 线程) ===== */
+
+/* UDP: 用目标 IP 调 GET_VERSION 握手, 成功即已连接 (与 tab1 连接语义一致). */
+static void on_udp_connect(void)
+{
+	if (g_upg.udp_connected) {
+		/* 断开 */
+		g_upg.udp_connected = false;
+		SetWindowTextW(g_upg.hConn, L"连接");
+		SetWindowTextW(g_upg.hVersion, L"(未查询)");
+		log_append_ptr(L"已断开连接");
+		update_button_state();
+		return;
+	}
+	uint8_t ip4[4];
+	if (!read_ip_edit(g_upg.hIp, ip4)) {
+		MessageBoxW(g_upg.hSelf, L"请填写目标设备 IP (如 192.168.12.101)", L"提示",
+		            MB_ICONWARNING);
+		return;
+	}
+	char ip[64];
+	snprintf(ip, sizeof(ip), "%d.%d.%d.%d", ip4[0], ip4[1], ip4[2], ip4[3]);
+	char ver[80] = {0};
+	if (!UdpManager_GetVersion(g_upg.udp, ip, ver, sizeof(ver))) {
+		wchar_t m[256];
+		const char *e = UdpManager_GetLastError(g_upg.udp);
+		wchar_t werr[192];
+		MultiByteToWideChar(CP_UTF8, 0, e, -1, werr, 192);
+		swprintf(m, 256, L"连接设备失败: %ls", werr);
+		MessageBoxW(g_upg.hSelf, m, L"连接失败", MB_ICONERROR);
+		return;
+	}
+	g_upg.udp_connected = true;
+	SetWindowTextW(g_upg.hConn, L"断开");
+	wchar_t wver[160];
+	MultiByteToWideChar(CP_UTF8, 0, ver, -1, wver, 160);
+	SetWindowTextW(g_upg.hVersion, wver);
+	log_append_ptr(L"连接成功, 已获取设备版本");
+	update_button_state();
+}
+
+/* 连接按钮: 按当前通道分发到 UDP / CAN. */
+static void on_connect(void)
+{
+	if (current_channel()) {
+		on_can_connect();
+	} else {
+		on_udp_connect();
+	}
+}
+
 /* ===== UDP worker 线程 =====
- * 全程只读 g_upg 缓存值 (cur_ip/cur_test/img), 仅通过 PostMessage 与 UI 交互. */
+ * 全程只读 g_upg 缓存值 (cur_ip/cur_permanent/img), 仅通过 PostMessage 与 UI 交互. */
 
 static DWORD WINAPI udp_upgrade_thread(LPVOID arg)
 {
@@ -509,9 +531,9 @@ static DWORD WINAPI udp_upgrade_thread(LPVOID arg)
 		post_progress((int)((uint64_t)off * 90 / sz), 1);
 	}
 
-	/* CRC + FwEnd. test=1 测试模式 (不永久, 设备重启回滚). */
+	/* CRC + FwEnd. test 固定 0=永久升级 (不允许测试模式). */
 	uint16_t crc = UdpManager_CRC16_CCITT(g_upg.img, sz);
-	uint8_t test = g_upg.cur_test ? 1 : 0;
+	uint8_t test = 0;
 	uint8_t result = 0;
 	if (!UdpManager_FwEnd(g_upg.udp, ip, test, crc, &result) || result != 1) {
 		post_log(L"FW_END 失败 (CRC 校验错误或设备写 flash 失败)");
@@ -583,23 +605,25 @@ static void on_start(void)
 	int can = current_channel();
 
 	if (!can) {
-		/* UDP: 检查目标 IP 已填 */
-		read_ip_to_str(g_upg.hIp, g_upg.cur_ip, sizeof(g_upg.cur_ip));
-		/* 简单校验: 4 段都填了 (空段 read_ip_to_str 当 0 处理, 这里要求非空) */
-		bool ip_empty = false;
-		for (int i = 0; i < 4; i++) {
-			wchar_t buf[8];
-			if (GetWindowTextW(g_upg.hIp[i], buf, 8) == 0) { ip_empty = true; break; }
-		}
-		if (ip_empty) {
-			MessageBoxW(g_upg.hSelf, L"请填写目标设备 IP", L"提示",
+		/* UDP: 必须已连接 */
+		if (!g_upg.udp_connected) {
+			MessageBoxW(g_upg.hSelf, L"请先点 \"连接\" 连接设备", L"提示",
 			            MB_ICONWARNING);
 			return;
 		}
+		/* UDP: 检查目标 IP 已填 (单框) */
+		uint8_t ip4[4];
+		if (!read_ip_edit(g_upg.hIp, ip4)) {
+			MessageBoxW(g_upg.hSelf, L"请填写目标设备 IP (如 192.168.12.101)", L"提示",
+			            MB_ICONWARNING);
+			return;
+		}
+		/* read_ip_edit 已校验过, 重新拼合法串覆盖, 避免传输层收到残缺串 */
+		snprintf(g_upg.cur_ip, sizeof(g_upg.cur_ip),
+		         "%d.%d.%d.%d", ip4[0], ip4[1], ip4[2], ip4[3]);
 		/* UDP: 升级前查询一次设备版本, 刷新 label */
 		on_query_version();
-		g_upg.cur_test = (SendMessageW(g_upg.hTest, BM_GETCHECK, 0, 0) == BST_CHECKED);
-		g_upg.cur_permanent = !g_upg.cur_test;
+		g_upg.cur_permanent = true;
 	} else {
 		/* CAN: 检查已连接 */
 		if (!g_upg.can_connected) {
@@ -607,9 +631,7 @@ static void on_start(void)
 			            MB_ICONWARNING);
 			return;
 		}
-		/* CAN: test 复选框含义对调 (与 UDP 复用同一控件, 但 CAN 升级时建议永久)
-		 * 这里固定 permanent=true (UDP 的 test 复选框对 CAN 通道无意义, 因 CAN
-		 * 升级 sub-section 不显示该复选框). */
+		/* CAN: 永久升级 (无测试模式) */
 		g_upg.cur_permanent = true;
 	}
 
@@ -628,8 +650,8 @@ static void on_start(void)
 	                        NULL, 0, &tid);
 	if (!h) {
 		MessageBoxW(g_upg.hSelf, L"创建升级线程失败", L"错误", MB_ICONERROR);
-		EnableWindow(g_upg.hStart, TRUE);
 		EnableWindow(g_upg.hBrowse, TRUE);
+		update_button_state();
 		return;
 	}
 	g_upg.thread = h;
@@ -641,18 +663,19 @@ static void on_reboot(void)
 	int can = current_channel();
 	bool ok;
 	if (!can) {
-		char ip[64] = {0};
-		read_ip_to_str(g_upg.hIp, ip, sizeof(ip));
-		bool ip_empty = false;
-		for (int i = 0; i < 4; i++) {
-			wchar_t buf[8];
-			if (GetWindowTextW(g_upg.hIp[i], buf, 8) == 0) { ip_empty = true; break; }
-		}
-		if (ip_empty) {
-			MessageBoxW(g_upg.hSelf, L"请先填写目标设备 IP", L"提示",
+		if (!g_upg.udp_connected) {
+			MessageBoxW(g_upg.hSelf, L"请先点 \"连接\" 连接设备", L"提示",
 			            MB_ICONWARNING);
 			return;
 		}
+		uint8_t ip4[4];
+		if (!read_ip_edit(g_upg.hIp, ip4)) {
+			MessageBoxW(g_upg.hSelf, L"请先填写目标设备 IP (如 192.168.12.101)", L"提示",
+			            MB_ICONWARNING);
+			return;
+		}
+		char ip[64] = {0};
+		snprintf(ip, sizeof(ip), "%d.%d.%d.%d", ip4[0], ip4[1], ip4[2], ip4[3]);
 		ok = UdpManager_Reboot(g_upg.udp, ip);
 		if (!ok) {
 			log_append_ptr(L"重启命令发送失败 (设备无响应)");
@@ -702,7 +725,7 @@ static void on_command(WPARAM wParam)
 	case IDC_UPG_GETVER:    on_query_version(); break;
 	case IDC_UPG_START:     on_start(); break;
 	case IDC_UPG_REBOOT:    on_reboot(); break;
-	case IDC_UPG_CAN_CONN:  on_can_connect(); break;
+	case IDC_UPG_CAN_CONN:  on_connect(); break;
 	case IDC_UPG_CAN_REFRESH: refresh_can_device(); break;
 	}
 }
@@ -730,15 +753,13 @@ static void create_controls(HWND hWnd)
 	SendMessageW(g_upg.hChanUdp, WM_SETFONT, (WPARAM)g_hFont, TRUE);
 	SendMessageW(g_upg.hChanCan, WM_SETFONT, (WPARAM)g_hFont, TRUE);
 	SendMessageW(g_upg.hChanUdp, BM_SETCHECK, BST_CHECKED, 0); /* 默认 UDP */
+	/* 行1: 连接/断开 (UDP/CAN 通用, 未连接时其他确认按钮置灰) */
+	g_upg.hConn = create_button(L"连接", gx + 250, 28, 80, 24, IDC_UPG_CAN_CONN);
 
-	/* 行2: UDP 目标 IP + 测试 (默认显示) */
+	/* 行2: UDP 目标 IP (单框, 默认显示) */
 	g_upg.hUdpLbl = create_label(L"目标 IP:", gx + 12, 62, 56, 14);
-	int ip_ids[4] = { IDC_UPG_IP1, IDC_UPG_IP2, IDC_UPG_IP3, IDC_UPG_IP4 };
-	create_ip_row(gx + 70, 58, ip_ids, g_upg.hIp);
-	g_upg.hTest = CreateWindowExW(0, L"BUTTON", L"测试模式 (不永久)",
-		WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-		gx + 260, 58, 180, 22, hWnd, (HMENU)(INT_PTR)IDC_UPG_TEST, g_hInst, NULL);
-	SendMessageW(g_upg.hTest, WM_SETFONT, (WPARAM)g_hFont, TRUE);
+	g_upg.hIp = create_edit(gx + 70, 58, 140, 22, IDC_UPG_IP1, 0);
+	SetWindowTextW(g_upg.hIp, L"192.168.12.101");
 
 	/* 行2 (重叠位置, 默认隐藏): CAN PCAN 设备 + 波特率 + 刷新 + 连接 */
 	g_upg.hCanLbl1 = create_label(L"PCAN 设备:", gx + 12, 62, 64, 14);
@@ -755,8 +776,7 @@ static void create_controls(HWND hWnd)
 		SendMessageW(g_upg.hCanBaud, CB_ADDSTRING, 0, (LPARAM)g_bauds[i].label);
 	}
 	SendMessageW(g_upg.hCanBaud, CB_SETCURSEL, 0, 0); /* 默认 250k */
-	g_upg.hCanRefresh = create_button(L"刷新", gx + gw - 180, 58, 80, 24, IDC_UPG_CAN_REFRESH);
-	g_upg.hCanConn = create_button(L"连接", gx + gw - 96, 58, 80, 24, IDC_UPG_CAN_CONN);
+	g_upg.hCanRefresh = create_button(L"刷新", gx + gw - 96, 58, 80, 24, IDC_UPG_CAN_REFRESH);
 
 	/* 默认 UDP, 隐藏 CAN 行 */
 	apply_channel_visibility();
@@ -814,6 +834,7 @@ static LRESULT CALLBACK upg_wndproc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
 		g_upg.can = CanManager_Create();
 		g_upg.thread = NULL;
 		g_upg.cancel = 0;
+		g_upg.udp_connected = false;
 		if (!g_upg.udp) {
 			log_append_ptr(L"错误: UdpManager 创建失败");
 		}
@@ -880,8 +901,8 @@ static LRESULT CALLBACK upg_wndproc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
 			g_upg.thread = NULL;
 		}
 		/* 恢复按钮 (与 on_start 的禁用对称: start + 浏览) */
-		EnableWindow(g_upg.hStart, g_upg.img ? TRUE : FALSE);
 		EnableWindow(g_upg.hBrowse, TRUE);
+		update_button_state();
 		if (success) {
 			SetWindowTextW(g_upg.hStatus, L"升级成功");
 			MessageBoxW(g_hMain, L"升级成功", L"结果", MB_ICONINFORMATION);
