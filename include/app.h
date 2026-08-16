@@ -29,5 +29,6 @@ void AppLog_Printf(const wchar_t *fmt, ...);
 HWND ConfigTab_Create(HWND hParent, HINSTANCE hInst);
 HWND UpgradeTab_Create(HWND hParent, HINSTANCE hInst);
 HWND ModbusTab_Create(HWND hParent, HINSTANCE hInst);
+HWND HistoryTab_Create(HWND hParent, HINSTANCE hInst);
 
 #endif /* APP_H */

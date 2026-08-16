@@ -2,6 +2,7 @@
  * Tab1: 参数设置
  * Tab2: 固件升级 (UDP + CAN)
  * Tab3: Modbus 调试 (TCP + RTU)
+ * Tab4: 历史记录解析
  */
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -13,6 +14,7 @@
 #include "config_tab.h"
 #include "upgrade_tab.h"
 #include "modbus_tab.h"
+#include "history_tab.h"
 #include "resource.h"
 
 #pragma comment(lib, "comctl32.lib")
@@ -84,6 +86,8 @@ static LRESULT CALLBACK main_wndproc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM 
 		TabCtrl_InsertItem(g_hTab, TAB_UPGRADE, &it);
 		it.pszText = (LPWSTR)L"Modbus 调试";
 		TabCtrl_InsertItem(g_hTab, TAB_MODBUS, &it);
+		it.pszText = (LPWSTR)L"历史记录";
+		TabCtrl_InsertItem(g_hTab, TAB_HISTORY, &it);
 
 		g_hStatus = CreateWindowExW(0, STATUSCLASSNAMEW, L"就绪",
 			WS_CHILD | WS_VISIBLE | SBARS_SIZEGRIP,
@@ -92,6 +96,7 @@ static LRESULT CALLBACK main_wndproc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM 
 		g_hTabDlg[TAB_CONFIG]  = ConfigTab_Create(g_hTab, g_hInst);
 		g_hTabDlg[TAB_UPGRADE] = UpgradeTab_Create(g_hTab, g_hInst);
 		g_hTabDlg[TAB_MODBUS]  = ModbusTab_Create(g_hTab, g_hInst);
+		g_hTabDlg[TAB_HISTORY] = HistoryTab_Create(g_hTab, g_hInst);
 		for (int i = 0; i < TAB_COUNT; i++) {
 			ShowWindow(g_hTabDlg[i], i == TAB_CONFIG ? SW_SHOW : SW_HIDE);
 		}

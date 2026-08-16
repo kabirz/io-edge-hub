@@ -8,7 +8,8 @@
 #define TAB_CONFIG              0
 #define TAB_UPGRADE             1
 #define TAB_MODBUS              2
-#define TAB_COUNT               3
+#define TAB_HISTORY             3
+#define TAB_COUNT               4
 
 /* ===== 通用控件 (9xxx) ===== */
 #define IDC_STATUSBAR           9001
@@ -93,5 +94,12 @@
 #define IDC_MB_DO_BASE          3120   /* DO1..DO8 = 3120..3127 */
 #define IDC_MB_AI_BASE          3130   /* AI1..AI4 = 3130..3133 */
 #define IDC_MB_TIMER            1      /* SetTimer id */
+
+/* ===== tab4 控件 ID (4xxx) — Task 历史记录解析 ===== */
+#define IDC_HIST_OPEN           4001   /* 打开 .raw 历史文件 */
+#define IDC_HIST_EXPORT         4002   /* 导出 CSV */
+#define IDC_HIST_INFO           4003   /* 静态: 文件信息 */
+#define IDC_HIST_LIST           4010   /* 记录 ListView */
+#define IDC_HIST_LOG            4020   /* 多行只读 EDIT */
 
 #endif /* RESOURCE_H */

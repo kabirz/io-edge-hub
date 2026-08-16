@@ -17,6 +17,7 @@ set(SOURCES
     src/config_tab.c
     src/upgrade_tab.c
     src/modbus_tab.c
+    src/history_tab.c
 )
 
 if(WIN32)
