@@ -12,7 +12,7 @@
  *   - DO 面板 (8 按钮, 可写): 8 个 BUTTON. 点击 → WriteSingleCoil(addr,!state) →
  *     立即 ReadCoils(0,8) 回读并更新按钮文字 (DOx ON/OFF).
  *   - AI 面板 (4 文本, 只读): ReadInput(1,4) → AI1/AI2 显示 mA, AI3/AI4 显示 V.
- *   - 寄存器表 ListView: 18 holding + 6 input, 双击写, "查询选中" 读单行.
+ *   - 寄存器表 ListView: 17 holding (时间戳两字合并) + 6 input, 双击写, "查询选中" 读单行.
  *
  * 自动刷新: 勾选 → SetTimer(hSelf, IDC_MB_TIMER, interval, NULL);
  * WM_TIMER 刷新 DI/DO/AI 面板 + 全部保持/输入寄存器表 (同一 UI 线程顺序执行).
@@ -28,6 +28,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <time.h>
 #include <wchar.h>
 
 #pragma comment(lib, "setupapi.lib")
@@ -59,8 +60,7 @@ static const RegMeta g_regs[] = {
 	{0x0B, L"IP第2字节",  false, RW_RW},
 	{0x0C, L"IP第3字节",  false, RW_RW},
 	{0x0D, L"IP第4字节",  false, RW_RW},
-	{0x0E, L"时间戳高字", false, RW_WO_TRIG},
-	{0x0F, L"时间戳低字", false, RW_WO_TRIG},
+	{0x0E, L"时间戳",     false, RW_RW},
 	{0x10, L"参数保存触发", false, RW_WO},
 	{0x11, L"重启触发",   false, RW_WO},
 	/* input (FC04 读, offset 0x00-0x05) */
@@ -72,7 +72,8 @@ static const RegMeta g_regs[] = {
 	{0x05, L"DI位图",    true,  RW_RO},
 };
 #define REG_COUNT (int)(sizeof(g_regs) / sizeof(g_regs[0]))
-#define HOLDING_COUNT 18   /* g_regs 前 18 项为 holding */
+#define HOLDING_COUNT 17      /* g_regs 前 17 项为 holding (时间戳两字已合并) */
+#define HOLDING_PHYS_COUNT 18 /* 物理 holding 寄存器数 (0x00-0x11), 批量读用 */
 #define DI_COUNT 16
 #define DO_COUNT 8
 #define AI_COUNT 4
@@ -333,32 +334,54 @@ static const wchar_t *rw_label(int rw)
 /* ===== 寄存器表 ListView 辅助 ===== */
 
 /* 把 holding/input 寄存器值格式化为显示串, 按寄存器实际含义显示:
+ * - 固件版本 (input 0x00): MAJOR<<12 | MINOR<<8 | PATCH → vX.Y.Z
  * - 位图类 (DO控制/DI使能/AI使能/DI位图): 十六进制 + 逐位二进制
  * - AI 电流/电压 (input 0x01-0x04, 0.01 精度): 十进制实际值 + 单位 (mA/V)
- * - CAN 帧 ID / 固件版本 / 时间戳: 十六进制
- * - 采样间隔: 十进制 + ms; CAN 波特率: 十进制 + k; RS485 波特率: 十进制 + bps
+ * - 时间戳 (holding 0x0E): 高16位<<16|低16位 = Unix 秒 → YYYY-MM-DD HH:MM:SS
+ * - CAN 帧 ID: 十六进制
+ * - 采样间隔: 十进制 + ms; CAN 波特率: 十进制 + kbps; RS485 波特率: 十进制 + bps
  * - 其余 (从机ID/IP字节/开关/触发): 十进制 */
-static void format_reg_value(int row_idx, uint16_t value, wchar_t *out, int cap)
+static void format_reg_value(int row_idx, uint32_t value, wchar_t *out, int cap)
 {
 	const RegMeta *r = &g_regs[row_idx];
 
+	/* 时间戳 (holding 0x0E): 32 位 Unix 秒 → 本机时区日期时间 */
+	if (!r->is_input && r->addr == 0x0E) {
+		time_t t = (time_t)value;
+		struct tm tmv;
+		if (localtime_s(&tmv, &t) == 0) {
+			wcsftime(out, cap, L"%Y-%m-%d %H:%M:%S", &tmv);
+		} else {
+			swprintf(out, cap, L"0x%08X", (unsigned)value);
+		}
+		return;
+	}
+
+	uint16_t v = (uint16_t)value;
+
 	if (r->is_input) {
 		switch (r->addr) {
-		case 0x01: swprintf(out, cap, L"%.2f mA", value / 100.0); return;
-		case 0x02: swprintf(out, cap, L"%.2f mA", value / 100.0); return;
-		case 0x03: swprintf(out, cap, L"%.2f V",  value / 100.0); return;
-		case 0x04: swprintf(out, cap, L"%.2f V",  value / 100.0); return;
+		case 0x01: swprintf(out, cap, L"%.2f mA", v / 100.0); return;
+		case 0x02: swprintf(out, cap, L"%.2f mA", v / 100.0); return;
+		case 0x03: swprintf(out, cap, L"%.2f V",  v / 100.0); return;
+		case 0x04: swprintf(out, cap, L"%.2f V",  v / 100.0); return;
 		case 0x05: { /* DI1-DI16 位图 */
 			wchar_t bin[17];
 			for (int i = 0; i < 16; i++) {
-				bin[i] = (value & (1u << (15 - i))) ? L'1' : L'0';
+				bin[i] = (v & (1u << (15 - i))) ? L'1' : L'0';
 			}
 			bin[16] = 0;
-			swprintf(out, cap, L"0x%04X %ls", value, bin);
+			swprintf(out, cap, L"0x%04X %ls", v, bin);
 			return;
 		}
-		case 0x00: swprintf(out, cap, L"0x%04X", value); return; /* 固件版本 */
-		default:   swprintf(out, cap, L"%u", value); return;
+		case 0x00: { /* 固件版本: MAJOR<<12 | MINOR<<8 | PATCH */
+			int major = (v >> 12) & 0xF;
+			int minor = (v >> 8) & 0xF;
+			int patch = v & 0xFF;
+			swprintf(out, cap, L"v%d.%d.%d", major, minor, patch);
+			return;
+		}
+		default:   swprintf(out, cap, L"%u", v); return;
 		}
 	}
 
@@ -369,25 +392,23 @@ static void format_reg_value(int row_idx, uint16_t value, wchar_t *out, int cap)
 	case 0x02: { /* AI 使能位图 */
 		wchar_t bin[17];
 		for (int i = 0; i < 16; i++) {
-			bin[i] = (value & (1u << (15 - i))) ? L'1' : L'0';
+			bin[i] = (v & (1u << (15 - i))) ? L'1' : L'0';
 		}
 		bin[16] = 0;
-		swprintf(out, cap, L"0x%04X %ls", value, bin);
+		swprintf(out, cap, L"0x%04X %ls", v, bin);
 		return;
 	}
-	case 0x03: swprintf(out, cap, L"%u ms", value); return;  /* DI 采样间隔 */
-	case 0x04: swprintf(out, cap, L"%u ms", value); return;  /* AI 采样间隔 */
-	case 0x06: swprintf(out, cap, L"0x%04X", value); return; /* CAN 业务帧 ID */
-	case 0x07: swprintf(out, cap, L"%u kbps", value); return; /* CAN 波特率 */
-	case 0x08: swprintf(out, cap, L"%u bps", value); return; /* RS485 波特率 */
-	case 0x0E: /* 时间戳高字 */
-	case 0x0F: swprintf(out, cap, L"0x%04X", value); return; /* 时间戳低字 */
-	default:   swprintf(out, cap, L"%u", value); return;     /* 开关/从机ID/IP字节/触发 */
+	case 0x03: swprintf(out, cap, L"%u ms", v); return;  /* DI 采样间隔 */
+	case 0x04: swprintf(out, cap, L"%u ms", v); return;  /* AI 采样间隔 */
+	case 0x06: swprintf(out, cap, L"0x%04X", v); return; /* CAN 业务帧 ID */
+	case 0x07: swprintf(out, cap, L"%u kbps", v); return; /* CAN 波特率 */
+	case 0x08: swprintf(out, cap, L"%u bps", v); return; /* RS485 波特率 */
+	default:   swprintf(out, cap, L"%u", v); return;     /* 开关/从机ID/IP字节/触发 */
 	}
 }
 
 /* 更新 ListView 某行的"当前值"列. */
-static void update_listview_row(int row_idx, uint16_t value)
+static void update_listview_row(int row_idx, uint32_t value)
 {
 	wchar_t vs[64];
 	format_reg_value(row_idx, value, vs, 64);
@@ -451,37 +472,64 @@ static bool refresh_ai(void)
 	return true;
 }
 
-/* 刷新寄存器表全部 24 行: 18 holding + 6 input. 读失败时记日志但继续. */
+/* 读单个 holding 行 (按 addr). 时间戳 0x0E 需读 0x0E+0x0F 合并为 32 位.
+ * 返回是否成功. */
+static bool read_holding_row(uint16_t addr, uint32_t *out)
+{
+	if (addr == 0x0E) {
+		uint16_t hi = 0, lo = 0;
+		if (!MbClient_ReadHolding(g_mb.mb, 0x0E, 1, &hi)) return false;
+		if (!MbClient_ReadHolding(g_mb.mb, 0x0F, 1, &lo)) return false;
+		*out = ((uint32_t)hi << 16) | lo;
+		return true;
+	}
+	uint16_t v = 0;
+	if (!MbClient_ReadHolding(g_mb.mb, addr, 1, &v)) return false;
+	*out = v;
+	return true;
+}
+
+/* 刷新寄存器表全部 23 行: 17 holding (时间戳两字合并) + 6 input. 读失败记日志但继续. */
 static void refresh_reg_table(void)
 {
-	uint16_t vals[REG_COUNT];
+	uint32_t vals[REG_COUNT];
 	bool ok[REG_COUNT];
 
-	/* holding 18 个连续读 (offset 0x00-0x11, 一次 FC03 读 18 个) */
-	uint16_t hold[HOLDING_COUNT];
-	if (MbClient_ReadHolding(g_mb.mb, 0, HOLDING_COUNT, hold)) {
-		for (int i = 0; i < HOLDING_COUNT; i++) {
-			vals[i] = hold[i];
-			ok[i] = true;
-		}
-	} else {
+	/* holding 18 个连续读 (offset 0x00-0x11, 一次 FC03 读 18 个); 失败改逐个读 */
+	uint16_t hold[HOLDING_PHYS_COUNT];
+	bool hold_ok = MbClient_ReadHolding(g_mb.mb, 0, HOLDING_PHYS_COUNT, hold);
+	if (!hold_ok) {
 		log_append(L"批量读 holding 失败, 改逐个读");
-		for (int i = 0; i < HOLDING_COUNT; i++) {
-			ok[i] = MbClient_ReadHolding(g_mb.mb, g_regs[i].addr, 1, &vals[i]);
+	}
+	for (int i = 0; i < HOLDING_COUNT; i++) {
+		const RegMeta *r = &g_regs[i];
+		if (hold_ok) {
+			ok[i] = true;
+			if (r->addr == 0x0E) {
+				/* 时间戳: 高16位在 0x0E, 低16位在 0x0F */
+				vals[i] = ((uint32_t)hold[0x0E] << 16) | hold[0x0F];
+			} else {
+				vals[i] = hold[r->addr];
+			}
+		} else {
+			ok[i] = read_holding_row(r->addr, &vals[i]);
 		}
 	}
-	/* input 6 个连续读 (offset 0x00-0x05) */
+	/* input 6 个连续读 (offset 0x00-0x05); 失败改逐个读 */
 	uint16_t inp[6];
-	if (MbClient_ReadInput(g_mb.mb, 0, 6, inp)) {
-		for (int i = 0; i < 6; i++) {
-			vals[HOLDING_COUNT + i] = inp[i];
-			ok[HOLDING_COUNT + i] = true;
-		}
-	} else {
+	bool inp_ok = MbClient_ReadInput(g_mb.mb, 0, 6, inp);
+	if (!inp_ok) {
 		log_append(L"批量读 input 失败, 改逐个读");
-		for (int i = 0; i < 6; i++) {
-			ok[HOLDING_COUNT + i] = MbClient_ReadInput(
-				g_mb.mb, g_regs[HOLDING_COUNT + i].addr, 1, &vals[HOLDING_COUNT + i]);
+	}
+	for (int i = 0; i < 6; i++) {
+		int row = HOLDING_COUNT + i;
+		if (inp_ok) {
+			ok[row] = true;
+			vals[row] = inp[i];
+		} else {
+			uint16_t v = 0;
+			ok[row] = MbClient_ReadInput(g_mb.mb, g_regs[row].addr, 1, &v);
+			vals[row] = v;
 		}
 	}
 	/* 更新 ListView 行 */
@@ -621,12 +669,18 @@ static void on_query_selected(void)
 		return;
 	}
 	const RegMeta *r = &g_regs[sel];
-	uint16_t val = 0;
+	uint32_t val = 0;
 	bool ok;
 	if (r->is_input) {
-		ok = MbClient_ReadInput(g_mb.mb, r->addr, 1, &val);
+		uint16_t v = 0;
+		ok = MbClient_ReadInput(g_mb.mb, r->addr, 1, &v);
+		val = v;
+	} else if (r->addr == 0x0E) {
+		ok = read_holding_row(0x0E, &val);   /* 时间戳: 合并 0x0E+0x0F */
 	} else {
-		ok = MbClient_ReadHolding(g_mb.mb, r->addr, 1, &val);
+		uint16_t v = 0;
+		ok = MbClient_ReadHolding(g_mb.mb, r->addr, 1, &v);
+		val = v;
 	}
 	if (!ok) {
 		show_mb_error(L"查询寄存器");
@@ -635,7 +689,7 @@ static void on_query_selected(void)
 	}
 	update_listview_row(sel, val);
 	wchar_t m[128];
-	swprintf(m, 128, L"查询 %ls = %u", r->name, val);
+	swprintf(m, 128, L"查询 %ls = %u", r->name, (unsigned)val);
 	log_append(m);
 }
 
@@ -686,8 +740,9 @@ static LRESULT CALLBACK input_wnd_proc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
 	return DefWindowProcW(hWnd, msg, wParam, lParam);
 }
 
-/* 真正的输入框实现: 注册临时类, 模态循环. 取消返回 false. */
-static bool prompt_uint_modal(const wchar_t *title, unsigned *out_val)
+/* 通用字符串输入弹窗: 预填 buf, 确定后写回 buf. 取消返回 false.
+ * 复用与 prompt_uint_modal 相同的临时窗口类 (编辑框 + OK/Cancel). */
+static bool prompt_str_modal(const wchar_t *title, wchar_t *buf, int cap)
 {
 	static const wchar_t *CLS = L"ioEdgeHubInputBoxCls";
 	static BOOL registered = FALSE;
@@ -702,7 +757,7 @@ static bool prompt_uint_modal(const wchar_t *title, unsigned *out_val)
 		registered = TRUE;
 	}
 
-	g_input_buf[0] = L'\0';
+	wcscpy_s(g_input_buf, 31, buf);   /* WM_CREATE 用它预填编辑框 */
 	g_input_confirmed = false;
 	g_hInputDlg = CreateWindowExW(WS_EX_DLGMODALFRAME, CLS, title,
 		WS_POPUP | WS_CAPTION | WS_SYSMENU,
@@ -743,19 +798,98 @@ static bool prompt_uint_modal(const wchar_t *title, unsigned *out_val)
 	if (hDlg) DestroyWindow(hDlg);
 
 	if (!g_input_confirmed) return false;
+	wcscpy_s(buf, cap, g_input_buf);
+	return true;
+}
+
+/* 数字输入弹窗 (支持 0x 十六进制 和 十进制, 值 ≤ 0xFFFF). 取消/非法返回 false. */
+static bool prompt_uint_modal(const wchar_t *title, unsigned *out_val)
+{
+	wchar_t buf[32];
+	buf[0] = L'\0';
+	if (!prompt_str_modal(title, buf, 32)) return false;
 
 	/* 解析输入: 支持 0x 十六进制 和 十进制 */
 	wchar_t *end = NULL;
 	unsigned long v;
-	if (wcsncmp(g_input_buf, L"0x", 2) == 0 || wcsncmp(g_input_buf, L"0X", 2) == 0) {
-		v = wcstoul(g_input_buf + 2, &end, 16);
+	if (wcsncmp(buf, L"0x", 2) == 0 || wcsncmp(buf, L"0X", 2) == 0) {
+		v = wcstoul(buf + 2, &end, 16);
 	} else {
-		v = wcstoul(g_input_buf, &end, 10);
+		v = wcstoul(buf, &end, 10);
 	}
-	if (end == g_input_buf) return false;
+	if (end == buf) return false;
 	if (v > 0xFFFF) return false;
 	*out_val = (unsigned)v;
 	return true;
+}
+
+/* 把 Unix 秒格式化为本机时区 "YYYY-MM-DD HH:MM:SS". */
+static void format_time_local(time_t t, wchar_t *out, int cap)
+{
+	struct tm tmv;
+	if (localtime_s(&tmv, &t) != 0) {
+		out[0] = L'\0';
+		return;
+	}
+	wcsftime(out, cap, L"%Y-%m-%d %H:%M:%S", &tmv);
+}
+
+/* 双击"时间戳"行: 以具体时间设置设备 RTC.
+ * 设备协议: 写 0x0E(高16位) → 写 0x0F(低16位) 触发 set_timestamp. */
+static void on_set_timestamp(void)
+{
+	if (!g_mb.connected) {
+		MessageBoxW(g_mb.hSelf, L"未连接", L"提示", MB_ICONWARNING);
+		return;
+	}
+	wchar_t buf[32];
+	format_time_local(time(NULL), buf, 32);
+	if (!prompt_str_modal(L"设置设备时间 (YYYY-MM-DD HH:MM:SS)", buf, 32)) return;
+
+	int y, mo, d, h, mi, s;
+	if (swscanf(buf, L"%d-%d-%d %d:%d:%d", &y, &mo, &d, &h, &mi, &s) != 6) {
+		MessageBoxW(g_mb.hSelf, L"时间格式错误, 应为 YYYY-MM-DD HH:MM:SS", L"输入错误",
+		            MB_ICONERROR);
+		return;
+	}
+	struct tm tmv;
+	memset(&tmv, 0, sizeof(tmv));
+	tmv.tm_year = y - 1900;
+	tmv.tm_mon = mo - 1;
+	tmv.tm_mday = d;
+	tmv.tm_hour = h;
+	tmv.tm_min = mi;
+	tmv.tm_sec = s;
+	tmv.tm_isdst = -1;
+	time_t t = mktime(&tmv);
+	if (t == (time_t)-1 || t < 0) {
+		MessageBoxW(g_mb.hSelf, L"时间无效", L"输入错误", MB_ICONERROR);
+		return;
+	}
+	uint32_t ts = (uint32_t)t;
+	uint16_t hi = (uint16_t)(ts >> 16);
+	uint16_t lo = (uint16_t)(ts & 0xFFFF);
+	if (!MbClient_WriteSingleReg(g_mb.mb, 0x0E, hi)) {
+		show_mb_error(L"写时间戳高字 (FC06)");
+		return;
+	}
+	if (!MbClient_WriteSingleReg(g_mb.mb, 0x0F, lo)) {
+		show_mb_error(L"写时间戳低字 (FC06)");
+		return;
+	}
+	/* 读回刷新 (设备读 0x0E/0x0F 返回实时时间) */
+	uint32_t rb = 0;
+	if (read_holding_row(0x0E, &rb)) {
+		for (int i = 0; i < REG_COUNT; i++) {
+			if (!g_regs[i].is_input && g_regs[i].addr == 0x0E) {
+				update_listview_row(i, rb);
+				break;
+			}
+		}
+	}
+	wchar_t m[128];
+	swprintf(m, 128, L"已设置设备时间 %ls", buf);
+	log_append(m);
 }
 
 /* 双击 ListView 行: 按 rw 决定读/写. */
@@ -771,6 +905,11 @@ static void on_listview_dblclk(void)
 	}
 	if (r->is_input) {
 		MessageBoxW(g_mb.hSelf, L"输入寄存器不可写", L"提示", MB_ICONINFORMATION);
+		return;
+	}
+	/* 时间戳行 (holding 0x0E): 以具体时间设置设备 RTC */
+	if (r->addr == 0x0E) {
+		on_set_timestamp();
 		return;
 	}
 	if (r->rw == RW_WO || r->rw == RW_WO_TRIG) {
@@ -1045,7 +1184,7 @@ static void create_controls(HWND hWnd)
 	col.cx = 80;  col.pszText = (LPWSTR)L"R/W";    col.iSubItem = 3;
 	ListView_InsertColumn(g_mb.hRegList, 3, &col);
 
-	/* 24 行 */
+	/* 23 行 (17 holding + 6 input) */
 	for (int i = 0; i < REG_COUNT; i++) {
 		const RegMeta *r = &g_regs[i];
 		wchar_t addr_str[16];
