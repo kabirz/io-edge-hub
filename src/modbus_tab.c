@@ -333,24 +333,28 @@ static const wchar_t *rw_label(int rw)
 
 /* ===== 寄存器表 ListView 辅助 ===== */
 
-/* 把 holding/input 寄存器值格式化为显示串, 按寄存器实际含义显示:
- * - 固件版本 (input 0x00): MAJOR<<12 | MINOR<<8 | PATCH → vX.Y.Z
- * - 位图类 (DO控制/DI使能/AI使能/DI位图): 十六进制 + 逐位二进制
- * - AI 电流/电压 (input 0x01-0x04, 0.01 精度): 十进制实际值 + 单位 (mA/V)
- * - 时间戳 (holding 0x0E): 高16位<<16|低16位 = Unix 秒 → YYYY-MM-DD HH:MM:SS
+/* 把 holding/input 寄存器值格式化为显示串. 每格先显示原始寄存器值, 换算/
+ * 解释结果放括号里 (所有行都能看到实际寄存器值):
+ * - 原始值: holding/input 16 位值; 时间戳 0x0E 为合并的 32 位 Unix 秒
+ * - 位图类 (DO控制/DI使能/AI使能/DI位图): 十六进制 + (逐位二进制)
+ * - AI 电流/电压 (input 0x01-0x04, 0.01 精度): 原始值 + (X.XX mA/V)
+ * - 固件版本 (input 0x00): 十六进制 + (vX.Y.Z)
+ * - 时间戳 (holding 0x0E): 十六进制 + (YYYY-MM-DD HH:MM:SS)
  * - CAN 帧 ID: 十六进制
- * - 采样间隔: 十进制 + ms; CAN 波特率: 十进制 + kbps; RS485 波特率: 十进制 + bps
- * - 其余 (从机ID/IP字节/开关/触发): 十进制 */
+ * - 采样间隔/波特率: 原始值 + (ms/kbps/bps)
+ * - 其余 (从机ID/IP字节/开关/触发): 十进制原始值 */
 static void format_reg_value(int row_idx, uint32_t value, wchar_t *out, int cap)
 {
 	const RegMeta *r = &g_regs[row_idx];
 
-	/* 时间戳 (holding 0x0E): 32 位 Unix 秒 → 本机时区日期时间 */
+	/* 时间戳 (holding 0x0E): 32 位 Unix 秒 → 原始值 + 本机时区日期时间 */
 	if (!r->is_input && r->addr == 0x0E) {
 		time_t t = (time_t)value;
 		struct tm tmv;
 		if (localtime_s(&tmv, &t) == 0) {
-			wcsftime(out, cap, L"%Y-%m-%d %H:%M:%S", &tmv);
+			wchar_t ts[24];
+			wcsftime(ts, 24, L"%Y-%m-%d %H:%M:%S", &tmv);
+			swprintf(out, cap, L"0x%08X (%ls)", (unsigned)value, ts);
 		} else {
 			swprintf(out, cap, L"0x%08X", (unsigned)value);
 		}
@@ -361,24 +365,24 @@ static void format_reg_value(int row_idx, uint32_t value, wchar_t *out, int cap)
 
 	if (r->is_input) {
 		switch (r->addr) {
-		case 0x01: swprintf(out, cap, L"%.2f mA", v / 100.0); return;
-		case 0x02: swprintf(out, cap, L"%.2f mA", v / 100.0); return;
-		case 0x03: swprintf(out, cap, L"%.2f V",  v / 100.0); return;
-		case 0x04: swprintf(out, cap, L"%.2f V",  v / 100.0); return;
+		case 0x01: swprintf(out, cap, L"%u (%.2f mA)", v, v / 100.0); return;
+		case 0x02: swprintf(out, cap, L"%u (%.2f mA)", v, v / 100.0); return;
+		case 0x03: swprintf(out, cap, L"%u (%.2f V)",  v, v / 100.0); return;
+		case 0x04: swprintf(out, cap, L"%u (%.2f V)",  v, v / 100.0); return;
 		case 0x05: { /* DI1-DI16 位图 */
 			wchar_t bin[17];
 			for (int i = 0; i < 16; i++) {
 				bin[i] = (v & (1u << (15 - i))) ? L'1' : L'0';
 			}
 			bin[16] = 0;
-			swprintf(out, cap, L"0x%04X %ls", v, bin);
+			swprintf(out, cap, L"0x%04X (%ls)", v, bin);
 			return;
 		}
 		case 0x00: { /* 固件版本: MAJOR<<12 | MINOR<<8 | PATCH */
 			int major = (v >> 12) & 0xF;
 			int minor = (v >> 8) & 0xF;
 			int patch = v & 0xFF;
-			swprintf(out, cap, L"v%d.%d.%d", major, minor, patch);
+			swprintf(out, cap, L"0x%04X (v%d.%d.%d)", v, major, minor, patch);
 			return;
 		}
 		default:   swprintf(out, cap, L"%u", v); return;
@@ -395,14 +399,14 @@ static void format_reg_value(int row_idx, uint32_t value, wchar_t *out, int cap)
 			bin[i] = (v & (1u << (15 - i))) ? L'1' : L'0';
 		}
 		bin[16] = 0;
-		swprintf(out, cap, L"0x%04X %ls", v, bin);
+		swprintf(out, cap, L"0x%04X (%ls)", v, bin);
 		return;
 	}
-	case 0x03: swprintf(out, cap, L"%u ms", v); return;  /* DI 采样间隔 */
-	case 0x04: swprintf(out, cap, L"%u ms", v); return;  /* AI 采样间隔 */
+	case 0x03: swprintf(out, cap, L"%u (ms)", v); return;  /* DI 采样间隔 */
+	case 0x04: swprintf(out, cap, L"%u (ms)", v); return;  /* AI 采样间隔 */
 	case 0x06: swprintf(out, cap, L"0x%04X", v); return; /* CAN 业务帧 ID */
-	case 0x07: swprintf(out, cap, L"%u kbps", v); return; /* CAN 波特率 */
-	case 0x08: swprintf(out, cap, L"%u bps", v); return; /* RS485 波特率 */
+	case 0x07: swprintf(out, cap, L"%u (kbps)", v); return; /* CAN 波特率 */
+	case 0x08: swprintf(out, cap, L"%u (bps)", v); return; /* RS485 波特率 */
 	default:   swprintf(out, cap, L"%u", v); return;     /* 开关/从机ID/IP字节/触发 */
 	}
 }
@@ -636,6 +640,11 @@ static void on_connect(void)
 	}
 
 	set_conn_state(true);
+	/* 连接后立即加载所有面板 + 寄存器表的实际值 */
+	refresh_do();
+	refresh_di();
+	refresh_ai();
+	refresh_reg_table();
 	wchar_t m[64];
 	swprintf(m, 64, L"已连接 (%ls)", rtu ? L"RTU" : L"TCP");
 	log_append(m);
@@ -1156,7 +1165,7 @@ static void create_controls(HWND hWnd)
 	SendMessageW(g_mb.hAutoRef, WM_SETFONT, (WPARAM)g_hFont, TRUE);
 	g_mb.hAutoRefLbl = create_label(L"间隔(ms):", gx + 184, 336, 56, 14);
 	g_mb.hAutoRefInt = create_edit(gx + 240, 332, 60, 22, IDC_MB_AUTOREF_INT, ES_NUMBER);
-	SetWindowTextW(g_mb.hAutoRefInt, L"1000");
+	SetWindowTextW(g_mb.hAutoRefInt, L"500");
 	/* 查询选中 */
 	g_mb.hRegQuery = create_button(L"查询选中", gx + 320, 332, 80, 22, IDC_MB_REG_QUERY);
 	g_mb.hRegHint = create_label(L"(提示: 双击 RW 行可写入; WO 行写触发值; RO 行只读)",
@@ -1175,11 +1184,11 @@ static void create_controls(HWND hWnd)
 	LVCOLUMNW col;
 	memset(&col, 0, sizeof(col));
 	col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
-	col.cx = 70;  col.pszText = (LPWSTR)L"地址";   col.iSubItem = 0;
+	col.cx = 60;  col.pszText = (LPWSTR)L"地址";   col.iSubItem = 0;
 	ListView_InsertColumn(g_mb.hRegList, 0, &col);
-	col.cx = 160; col.pszText = (LPWSTR)L"名称";   col.iSubItem = 1;
+	col.cx = 150; col.pszText = (LPWSTR)L"名称";   col.iSubItem = 1;
 	ListView_InsertColumn(g_mb.hRegList, 1, &col);
-	col.cx = 260; col.pszText = (LPWSTR)L"当前值"; col.iSubItem = 2;
+	col.cx = 220; col.pszText = (LPWSTR)L"当前值"; col.iSubItem = 2;
 	ListView_InsertColumn(g_mb.hRegList, 2, &col);
 	col.cx = 80;  col.pszText = (LPWSTR)L"R/W";    col.iSubItem = 3;
 	ListView_InsertColumn(g_mb.hRegList, 3, &col);
