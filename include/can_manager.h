@@ -52,9 +52,10 @@ CanManager *CanManager_Create(void);
 void CanManager_Destroy(CanManager *m);
 const char *CanManager_GetLastError(CanManager *m);
 
-/* 设备探测: 用 Pcan_LookUpChannel 找首个 PCAN-USB 通道.
- * 成功返回 true, *out_channel 为通道句柄 (0-based). */
-bool CanManager_DetectDevice(CanManager *m, int *out_channel);
+/* 设备探测: 枚举系统内所有 PCAN-USB 通道 (Pcan_LookUpChannel).
+ * out_names[i] 填 "PCAN-USB: %02Xh" (名称格式与 handler-receiver 一致),
+ * out_channels[i] 填通道句柄 (Connect 用). 返回设备数 (0..16). */
+int CanManager_DetectDevices(CanManager *m, char out_names[][32], int out_channels[], int max);
 
 /* 连接指定通道 (channel=PCAN 通道句柄, 0-based; bitrate 如 250000).
  * 失败 last_error 填 PCAN 状态码. */

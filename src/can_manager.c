@@ -125,6 +125,23 @@ static bool can_read_resp(CanManager *m, uint32_t expect_id, int timeout_ms,
 	}
 }
 
+/* 清空 RX 缓冲: 在 duration_ms 内持续读并丢弃所有帧 (队列空即等下一轮).
+ * 参考 firmware_upgrade 工具的 can_flush_rx: 探测 bootloader 前清空, 避免
+ * 旧帧干扰 / 探测帧被延迟处理. */
+static void can_flush_rx(CanManager *m, int duration_ms)
+{
+	if (!m || !Pcan_Read) return;
+	DWORD end = GetTickCount() + (DWORD)duration_ms;
+	while ((long)(end - GetTickCount()) > 0) {
+		TPCANMsg msg;
+		TPCANTimestampMsg ts;
+		TPCANStatus st = Pcan_Read(m->channel, &msg, &ts);
+		if (st != PCAN_ERROR_OK) {
+			Sleep(1);
+		}
+	}
+}
+
 /* ================================================================
  * 生命周期
  * ================================================================ */
@@ -154,25 +171,31 @@ const char *CanManager_GetLastError(CanManager *m)
  * (那会真实 open/close 通道, 可能与正在用的实例冲突).
  * ================================================================ */
 
-bool CanManager_DetectDevice(CanManager *m, int *out_channel)
+/* 枚举所有 PCAN-USB 通道 (镜像 handler-receiver CanManager_DetectDevice):
+ * 按 "devicetype=pcan_usb, controllernumber=N" 查询, 名称格式 "PCAN-USB: %02Xh". */
+int CanManager_DetectDevices(CanManager *m, char out_names[][32], int out_channels[], int max)
 {
-	if (!m) return false;
+	if (!m || !out_names || !out_channels || max <= 0) return 0;
 	if (!PcanLoader_Load() || !Pcan_LookUpChannel) {
 		sprintf(m->last_error, "未加载 PCANBasic.dll, 请安装 PCAN-Basic 驱动");
-		return false;
+		return 0;
 	}
 
-	for (uint32_t i = 0; i < 16; i++) {
+	int count = 0;
+	for (uint32_t i = 0; i < 16 && count < max; i++) {
 		TPCANHandle ch = PCAN_NONEBUS;
 		char szLookup[64];
 		sprintf(szLookup, "devicetype=pcan_usb,controllernumber=%u", i);
 		if (Pcan_LookUpChannel(szLookup, &ch) == PCAN_ERROR_OK && ch != PCAN_NONEBUS) {
-			if (out_channel) *out_channel = (int)ch;
-			return true;
+			sprintf(out_names[count], "PCAN-USB: %02Xh", ch);
+			out_channels[count] = (int)ch;
+			count++;
 		}
 	}
-	sprintf(m->last_error, "未检测到 PCAN-USB 设备");
-	return false;
+	if (count == 0) {
+		sprintf(m->last_error, "未检测到 PCAN-USB 设备");
+	}
+	return count;
 }
 
 bool CanManager_Connect(CanManager *m, int channel, uint32_t bitrate)
@@ -395,7 +418,10 @@ bool CanManager_EnterBoot(CanManager *m)
 		return false;
 	}
 
-	/* 1. 尽力发 REBOOT (设备硬死机时不响应, 忽略即可; 成功则无需手动重启) */
+	/* 1. 清空 RX 缓冲 (避免旧帧干扰), 再尽力发一次 REBOOT: 设备软死机
+	 *    (CAN RX 线程仍可调度) 或正常运行时可靠; 硬死机时无效, 此时靠用户在
+	 *    下方窗口内手动断电/复位. */
+	can_flush_rx(m, 100);
 	{
 		uint8_t fr[8] = {0};
 		fr[0] = IO_FW_CMD_REBOOT;
@@ -503,17 +529,18 @@ bool CanManager_GetVersion(CanManager *m, char *out_ver, int out_cap)
 		Sleep(1);
 	}
 
-	/* 按 seq 拼接, 遇 '\0' 截断 */
+	/* 按 seq 拼接, 遇 '\0' 截断 (保留已累积字符, 参考 handler-receiver).
+	 * 末帧不足 7B 已由设备 '\0' 填充, 故遇 '\0' 即停止拼接. */
 	int out = 0;
-	for (int i = 0; i < total_frames && out + 1 < out_cap; i++) {
+	bool done = false;
+	for (int i = 0; i < total_frames && !done && out + 1 < out_cap; i++) {
 		if (!ver_got[i]) break;   /* 帧缺失, 截断 */
 		for (int j = 0; j < 7 && out + 1 < out_cap; j++) {
-			if (ver_text[i][j] == '\0') { out = -1; break; }   /* 命中终止符 */
+			if (ver_text[i][j] == '\0') { done = true; break; }   /* 命中终止符 */
 			out_ver[out++] = ver_text[i][j];
 		}
-		if (out < 0) break;
 	}
-	out_ver[(out < 0) ? 0 : out] = '\0';
+	out_ver[out] = '\0';
 	return (out > 0);
 }
 
