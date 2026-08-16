@@ -302,10 +302,8 @@ static void on_browse(void)
 		g_upg.has_keyhash = false;
 	}
 
-	wchar_t info[200];
-	swprintf(info, 200, L"size=%u 字节  keyhash=%ls",
-	         (unsigned)size,
-	         has_kh ? L"已提取" : L"缺失(将跳过校验)");
+	wchar_t info[64];
+	swprintf(info, 64, L"%u 字节", (unsigned)size);
 	set_fileinfo(info);
 	update_button_state();
 }
@@ -359,17 +357,21 @@ static void on_query_version(void)
 
 /* ===== CAN 连接 (UI 线程) ===== */
 
-/* 刷新 PCAN 设备下拉: 调 DetectDevice 探测首个 PCAN-USB 通道.
+/* 刷新 PCAN 设备下拉: 枚举所有 PCAN-USB 通道 (名称格式与 handler-receiver 一致).
  * 更新 can_detected 标志并刷新按钮可用性. */
 static void refresh_can_device(void)
 {
 	SendMessageW(g_upg.hCanDev, CB_RESETCONTENT, 0, 0);
-	int ch = 0;
-	if (CanManager_DetectDevice(g_upg.can, &ch)) {
-		wchar_t buf[32];
-		swprintf(buf, 32, L"PCAN-USB 通道 %d", ch);
-		SendMessageW(g_upg.hCanDev, CB_ADDSTRING, 0, (LPARAM)buf);
-		SendMessageW(g_upg.hCanDev, CB_SETITEMDATA, 0, (LPARAM)ch);
+	char names[16][32];
+	int channels[16];
+	int cnt = CanManager_DetectDevices(g_upg.can, names, channels, 16);
+	if (cnt > 0) {
+		for (int i = 0; i < cnt; i++) {
+			wchar_t wname[32];
+			MultiByteToWideChar(CP_ACP, 0, names[i], -1, wname, 32);
+			SendMessageW(g_upg.hCanDev, CB_ADDSTRING, 0, (LPARAM)wname);
+			SendMessageW(g_upg.hCanDev, CB_SETITEMDATA, i, (LPARAM)channels[i]);
+		}
 		SendMessageW(g_upg.hCanDev, CB_SETCURSEL, 0, 0);
 		g_upg.can_detected = true;
 		log_append_ptr(L"已刷新: 检测到 PCAN-USB 设备");
@@ -749,6 +751,7 @@ static void on_command(WPARAM wParam)
 	}
 	if (id == IDC_UPG_CHAN_CAN && code == BN_CLICKED) {
 		apply_channel_visibility();
+		refresh_can_device();   /* 切到 CAN 通道时自动扫描设备 */
 		return;
 	}
 	if (code != BN_CLICKED) return;
@@ -842,7 +845,7 @@ static void create_controls(HWND hWnd)
 		hWnd, (HMENU)(INT_PTR)IDC_UPG_PROGRESS, g_hInst, NULL);
 	SendMessageW(g_upg.hProgress, PBM_SETRANGE, 0, MAKELPARAM(0, 100));
 	SendMessageW(g_upg.hProgress, PBM_SETPOS, 0, 0);
-	g_upg.hStatus = create_label(L"就绪", gx + 318, 246, 300, 14);
+	g_upg.hStatus = create_label(L"就绪", gx + 318, 246, 268, 14);
 	g_upg.hStart = create_button(L"开始升级", gx + gw - 180, 242, 80, 24, IDC_UPG_START);
 	g_upg.hReboot = create_button(L"重启", gx + gw - 96, 242, 80, 24, IDC_UPG_REBOOT);
 	EnableWindow(g_upg.hStart, FALSE);
