@@ -11,6 +11,11 @@
 #define CAN_ID_IO_DATA     0x103   /* 主→设 固件数据 (≤8B 原始) */
 #define CAN_ID_IO_KEYHASH  0x104   /* 主→设 keyhash 分片: data[0]=seq, data[1..7]=7B */
 #define CAN_ID_IO_VERSION  0x105   /* 设→主 版本分片: data[0]=seq, data[1..7]=ASCII */
+#define CAN_ID_IO_BOOT_PROBE 0x106 /* 设→主 MCUboot 探测: [0..3]="BTO1", [4..6]=vM.m.p */
+#define CAN_ID_IO_BOOT_ACK   0x107 /* 主→设 探测应答 (任意 1B) */
+
+/* MCUboot 启动探测帧 magic ("BTO1", LE32) */
+#define IO_FW_BOOT_PROBE_MAGIC  0x42544F31u
 
 #define CAN_IO_DEFAULT_BITRATE  250000
 
@@ -66,6 +71,17 @@ bool CanManager_IsConnected(const CanManager *m);
 bool CanManager_FirmwareUpgrade(CanManager *m, const uint8_t *img, uint32_t size,
                                 const uint8_t keyhash[32], bool permanent,
                                 can_progress_cb progress, void *user);
+
+/* 进入 MCUboot bootloader 紧急救援模式 (阻塞, 调用方在 worker 线程调):
+ * 1. 尽力发一次 REBOOT (0x101 cmd=3): 设备软死机/正常运行时可靠, 硬死机无效
+ * 2. 60s 内持续轮询 0x106 探测帧 (data[0..3]="BTO1", data[4..6]=vM.m.p);
+ *    设备死机时需用户手动断电/复位重启, 主机全程监听不会错过 bootloader
+ *    的 ~500ms 探测窗口, 调用方应在此之前提示用户手动重启
+ * 3. 回 0x107 应答 (1B), 设备随即进入 ~15s 固件升级等待窗口
+ * 之后调 FirmwareUpgrade 即可 (keyhash/START/DATA/CONFIRM 协议在 app 与
+ * bootloader 共用); bootloader 内 CONFIRM 后设备本会话内完成 swap, 无需重启.
+ * 成功返回 true. */
+bool CanManager_EnterBoot(CanManager *m);
 
 /* 查询版本字符串 (0x101 cmd=2 → 0x102 code=2 + 0x105 分片拼接).
  * 成功 true, out_ver 填 NUL 终止串. */

@@ -8,6 +8,12 @@
  *   0x103 主→设 固件数据: ≤8B 原始
  *   0x104 主→设 keyhash 分片: data[0]=seq(0..4), data[1..7]=7B (DLC=8, 共 5 帧)
  *   0x105 设→主 版本分片: data[0]=seq, data[1..7]=ASCII (末帧 '\0' 填充)
+ *   0x106 设→主 MCUboot 探测 (仅 bootloader): data[0..3]="BTO1", data[4..6]=vM.m.p
+ *   0x107 主→设 探测应答 (任意 1B) → 设备进入固件升级等待
+ *
+ * MCUboot 紧急救援模式 (CanManager_EnterBoot):
+ *   发 REBOOT → 等 0x106 探测帧 → 回 0x107 → 之后 keyhash/START/DATA/CONFIRM
+ *   流程在 app 与 bootloader 完全共用; bootloader 内 CONFIRM 后本会话直接 swap.
  *
  * PCAN 调用框架 (Initialize/Write/Read/LookUpChannel/FilterMessages) 复用
  * handler-receiver src/can_manager.c 的模式, 但改成同步 req/resp 模型
@@ -30,6 +36,11 @@ struct CanManager {
 	uint32_t bitrate;
 	char last_error[128];
 };
+
+/* 等待 MCUboot bootloader 探测帧 (0x106) 的最长时间. 设备死机时 REBOOT 命令
+ * 无效, 需用户手动断电/复位重启, 因此窗口要足够长以覆盖"走到设备→重启→
+ * 进入 MCUboot"的时间 (bootloader 探测窗口仅 ~500ms, 主机全程轮询不会错过). */
+#define BOOT_PROBE_WAIT_MS  60000
 
 /* ================================================================
  * 内部原语: 帧收发
@@ -185,12 +196,13 @@ bool CanManager_Connect(CanManager *m, int channel, uint32_t bitrate)
 	m->bitrate = bitrate;
 	m->connected = true;
 
-	/* 配置接收过滤器: 仅放行固件回复(0x102)与版本分片(0x105), 屏蔽总线其他流量,
-	 * 避免升级期间 RX 队列被无关帧灌满. 多次 FilterMessages 调用为累加 (OR).
-	 * (对齐 handler-receiver Connect 的过滤器设置思路) */
+	/* 配置接收过滤器: 仅放行固件回复(0x102)/版本分片(0x105)/bootloader 探测(0x106),
+	 * 屏蔽总线其他流量, 避免升级期间 RX 队列被无关帧灌满. 多次 FilterMessages
+	 * 调用为累加 (OR). (对齐 handler-receiver Connect 的过滤器设置思路) */
 	if (Pcan_FilterMessages) {
 		Pcan_FilterMessages(m->channel, CAN_ID_IO_RESP, CAN_ID_IO_RESP, 0);
 		Pcan_FilterMessages(m->channel, CAN_ID_IO_VERSION, CAN_ID_IO_VERSION, 0);
+		Pcan_FilterMessages(m->channel, CAN_ID_IO_BOOT_PROBE, CAN_ID_IO_BOOT_PROBE, 0);
 	}
 	return true;
 }
@@ -358,6 +370,57 @@ bool CanManager_FirmwareUpgrade(CanManager *m, const uint8_t *img, uint32_t size
 	}
 
 	if (progress) progress(100, user);
+	return true;
+}
+
+/* ================================================================
+ * MCUboot bootloader 紧急救援模式
+ *
+ * 设备 MCUboot 阶段 (CONFIG_CAN_FW_UPGRADE_BOOT_WAIT) 启动时在探测窗口内
+ * 周期发 0x106 探测帧 (can_fw_boot.c boot_go_hook). 主机流程:
+ *   1. 尽力发一次 REBOOT: 设备软死机 (CAN RX 线程仍可调度) 或正常运行时
+ *      会重启进 MCUboot; 硬死机时无效, 此时靠用户在下方窗口内手动断电/复位.
+ *   2. 60s 内持续轮询 0x106 探测帧: data[0..3]="BTO1" (LE32), data[4..6]=vM.m.p.
+ *      用户手动重启后, bootloader 在 ~500ms 探测窗口内多次发帧, 主机全程
+ *      轮询 (1ms 粒度) 不会错过.
+ *   3. 回 0x107 (1B) 应答, 设备随即进入 ~15s 固件升级等待窗口
+ * 之后 FirmwareUpgrade 的 keyhash/START/DATA/CONFIRM 流程在 app 与 bootloader
+ * 完全共用; bootloader 内 CONFIRM 后设备在本会话内直接完成 swap (无需 REBOOT).
+ * ================================================================ */
+
+bool CanManager_EnterBoot(CanManager *m)
+{
+	if (!m || !m->connected) {
+		if (m) sprintf(m->last_error, "CAN 未连接");
+		return false;
+	}
+
+	/* 1. 尽力发 REBOOT (设备硬死机时不响应, 忽略即可; 成功则无需手动重启) */
+	{
+		uint8_t fr[8] = {0};
+		fr[0] = IO_FW_CMD_REBOOT;
+		can_write(m, CAN_ID_IO_CMD, fr, 8);
+	}
+
+	/* 2. 60s 内等 0x106 探测帧 (can_read_resp 丢弃其余帧, 逐帧轮询).
+	 *    code = data[0..3] LE32 = "BTO1" magic; arg = data[4..7] LE32 = M.m.p.0 */
+	uint32_t code = 0, arg = 0;
+	if (!can_read_resp(m, CAN_ID_IO_BOOT_PROBE, BOOT_PROBE_WAIT_MS, &code, &arg)) {
+		sprintf(m->last_error,
+		        "未收到 MCUboot 探测帧 (0x106): 请确认已手动断电重启设备, 且固件启用了 CAN bootloader");
+		return false;
+	}
+	if (code != IO_FW_BOOT_PROBE_MAGIC) {
+		sprintf(m->last_error, "探测帧 magic 异常: 0x%08X", code);
+		return false;
+	}
+
+	/* 3. 应答 0x107 (任意 1B), 设备进入固件升级等待 */
+	uint8_t ack = 0x5A;
+	if (!can_write(m, CAN_ID_IO_BOOT_ACK, &ack, 1)) {
+		return false;
+	}
+
 	return true;
 }
 

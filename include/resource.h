@@ -55,6 +55,7 @@
 #define IDC_UPG_CAN_BAUD        2021   /* PCAN 波特率下拉 */
 #define IDC_UPG_CAN_CONN        2022   /* 连接/断开 按钮 (UDP/CAN 通用) */
 #define IDC_UPG_CAN_REFRESH     2023   /* PCAN 刷新设备 按钮 */
+#define IDC_UPG_CAN_BOOT        2024   /* MCUboot 紧急救援模式 复选框 */
 #define IDC_UPG_FILE            2030   /* 固件路径 EDIT */
 #define IDC_UPG_BROWSE          2031   /* 浏览 按钮 */
 #define IDC_UPG_FILEINFO        2032   /* 静态: magic/size/keyhash */

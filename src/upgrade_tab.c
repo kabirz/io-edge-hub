@@ -42,8 +42,8 @@ typedef struct {
 	HWND hConn;
 	/* UDP 行: 目标 IP (单框) + 标签 */
 	HWND hUdpLbl, hIp;
-	/* CAN 行: 设备下拉 + 波特率下拉 + 刷新按钮 */
-	HWND hCanLbl1, hCanDev, hCanLbl2, hCanBaud, hCanRefresh;
+	/* CAN 行: 设备下拉 + 波特率下拉 + 刷新按钮 + 救援模式复选框 */
+	HWND hCanLbl1, hCanDev, hCanLbl2, hCanBaud, hCanRefresh, hCanBoot;
 	/* 版本信息行: label + 查询按钮 */
 	HWND hVerLbl, hVersion, hGetVer;
 	/* 文件 */
@@ -65,6 +65,7 @@ typedef struct {
 	/* worker 输入 (UI 线程在 CreateThread 前缓存, worker 只读) */
 	char  cur_ip[32];
 	bool  cur_permanent;
+	bool  cur_boot;       /* true=MCUboot 紧急救援模式 (CAN) */
 	/* 取消标志 + 线程句柄 */
 	volatile LONG cancel;
 	HANDLE thread;
@@ -158,6 +159,7 @@ static void apply_channel_visibility(void)
 	ShowWindow(g_upg.hCanLbl2,   can ? SW_SHOW : SW_HIDE);
 	ShowWindow(g_upg.hCanBaud,   can ? SW_SHOW : SW_HIDE);
 	ShowWindow(g_upg.hCanRefresh, can ? SW_SHOW : SW_HIDE);
+	ShowWindow(g_upg.hCanBoot,   can ? SW_SHOW : SW_HIDE);
 	/* 连接按钮文字随当前通道连接状态 */
 	SetWindowTextW(g_upg.hConn,
 		(can ? g_upg.can_connected : g_upg.udp_connected) ? L"断开" : L"连接");
@@ -566,7 +568,26 @@ static DWORD WINAPI can_upgrade_thread(LPVOID arg)
 	post_log(L"CAN 升级开始");
 
 	const uint8_t *kh = g_upg.has_keyhash ? g_upg.keyhash : NULL;
-	bool permanent = g_upg.cur_permanent; /* true=永久 (test unchecked) */
+	bool permanent = g_upg.cur_permanent; /* true=永久 */
+
+	/* MCUboot 紧急救援模式: 尽力发重启命令, 若设备死机则等待用户手动断电重启,
+	 * 收到 bootloader 探测帧后应答, 之后 keyhash/START/DATA/CONFIRM 流程与
+	 * app 升级完全共用. */
+	if (g_upg.cur_boot) {
+		post_log(L"MCUboot 救援模式: 已发送重启命令 (设备死机时无效), 等待 bootloader...");
+		post_log(L"若设备未重启, 请立即手动断电/复位设备 (最多等待 60 秒)");
+		if (!CanManager_EnterBoot(g_upg.can)) {
+			wchar_t m[256];
+			const char *e = CanManager_GetLastError(g_upg.can);
+			wchar_t werr[192];
+			MultiByteToWideChar(CP_UTF8, 0, e, -1, werr, 192);
+			swprintf(m, 256, L"进入 MCUboot 救援模式失败: %ls", werr);
+			post_log(m);
+			post_done(0);
+			return 0;
+		}
+		post_log(L"bootloader 已应答 (0x106), 开始升级...");
+	}
 
 	bool ok = CanManager_FirmwareUpgrade(g_upg.can, g_upg.img, g_upg.img_size,
 	                                     kh, permanent, can_progress_handler, NULL);
@@ -582,7 +603,11 @@ static DWORD WINAPI can_upgrade_thread(LPVOID arg)
 	}
 
 	post_progress(100, 2);
-	post_log(L"CAN 升级完成, 设备将重启");
+	if (g_upg.cur_boot) {
+		post_log(L"救援模式完成, 设备将在 bootloader 本会话内交换固件");
+	} else {
+		post_log(L"CAN 升级完成, 设备将重启");
+	}
 	post_done(1);
 	return 0;
 }
@@ -631,8 +656,16 @@ static void on_start(void)
 			            MB_ICONWARNING);
 			return;
 		}
-		/* CAN: 永久升级 (无测试模式) */
+		/* CAN: 永久升级 (无测试模式) + MCUboot 救援模式复选框 */
 		g_upg.cur_permanent = true;
+		g_upg.cur_boot = (SendMessageW(g_upg.hCanBoot, BM_GETCHECK, 0, 0) == BST_CHECKED);
+		if (g_upg.cur_boot) {
+			MessageBoxW(g_upg.hSelf,
+				L"即将进入 MCUboot 紧急救援模式。\n"
+				L"若设备死机无法响应重启命令，请立即手动给设备断电（或按复位键）重启，\n"
+				L"程序会自动检测 bootloader 探测帧并开始刷机（最多等待 60 秒）。",
+				L"MCUboot 救援模式", MB_ICONINFORMATION);
+		}
 	}
 
 	/* 禁用开始/浏览, 重置进度条. 浏览须禁用: on_browse 会
@@ -770,13 +803,18 @@ static void create_controls(HWND hWnd)
 	g_upg.hCanLbl2 = create_label(L"波特率:", gx + 226, 62, 48, 14);
 	g_upg.hCanBaud = CreateWindowExW(0, L"COMBOBOX", L"",
 		WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
-		gx + 274, 58, 100, 200, hWnd, (HMENU)(INT_PTR)IDC_UPG_CAN_BAUD, g_hInst, NULL);
+		gx + 274, 58, 130, 200, hWnd, (HMENU)(INT_PTR)IDC_UPG_CAN_BAUD, g_hInst, NULL);
 	SendMessageW(g_upg.hCanBaud, WM_SETFONT, (WPARAM)g_hFont, TRUE);
 	for (int i = 0; i < BAUD_COUNT; i++) {
 		SendMessageW(g_upg.hCanBaud, CB_ADDSTRING, 0, (LPARAM)g_bauds[i].label);
 	}
 	SendMessageW(g_upg.hCanBaud, CB_SETCURSEL, 0, 0); /* 默认 250k */
 	g_upg.hCanRefresh = create_button(L"刷新", gx + gw - 96, 58, 80, 24, IDC_UPG_CAN_REFRESH);
+	/* MCUboot 紧急救援模式 (应用异常时在 bootloader 阶段直接 CAN 升级) */
+	g_upg.hCanBoot = CreateWindowExW(0, L"BUTTON", L"MCUboot 救援模式",
+		WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+		gx + 412, 58, 150, 22, hWnd, (HMENU)(INT_PTR)IDC_UPG_CAN_BOOT, g_hInst, NULL);
+	SendMessageW(g_upg.hCanBoot, WM_SETFONT, (WPARAM)g_hFont, TRUE);
 
 	/* 默认 UDP, 隐藏 CAN 行 */
 	apply_channel_visibility();
