@@ -40,8 +40,8 @@ typedef struct {
 	HWND hChanUdp, hChanCan;
 	/* 连接/断开 (UDP/CAN 通用) */
 	HWND hConn;
-	/* UDP 行: 目标 IP (单框) + 标签 */
-	HWND hUdpLbl, hIp;
+	/* UDP 行: 目标 IP (单框) + 标签 + V2 窗口模式复选框 */
+	HWND hUdpLbl, hIp, hUdpV2;
 	/* CAN 行: 设备下拉 + 波特率下拉 + 刷新按钮 + 救援模式复选框 */
 	HWND hCanLbl1, hCanDev, hCanLbl2, hCanBaud, hCanRefresh, hCanBoot;
 	/* 版本信息行: label + 查询按钮 */
@@ -66,6 +66,7 @@ typedef struct {
 	char  cur_ip[32];
 	bool  cur_permanent;
 	bool  cur_boot;       /* true=MCUboot 紧急救援模式 (CAN) */
+	bool  cur_udp_v2;     /* true=UDP 使用 DATA_V2 窗口模式 (需设备新固件) */
 	/* 取消标志 + 线程句柄 */
 	volatile LONG cancel;
 	HANDLE thread;
@@ -153,6 +154,7 @@ static void apply_channel_visibility(void)
 	/* UDP 行 */
 	ShowWindow(g_upg.hUdpLbl, can ? SW_HIDE : SW_SHOW);
 	ShowWindow(g_upg.hIp, can ? SW_HIDE : SW_SHOW);
+	ShowWindow(g_upg.hUdpV2, can ? SW_HIDE : SW_SHOW);
 	/* CAN 行 */
 	ShowWindow(g_upg.hCanLbl1,   can ? SW_SHOW : SW_HIDE);
 	ShowWindow(g_upg.hCanDev,    can ? SW_SHOW : SW_HIDE);
@@ -482,17 +484,30 @@ static void on_connect(void)
 /* ===== UDP worker 线程 =====
  * 全程只读 g_upg 缓存值 (cur_ip/cur_permanent/img), 仅通过 PostMessage 与 UI 交互. */
 
+/* FW_DATA_V2 流式回调: 进度 (0-90% 数据发送阶段) + 取消 */
+static void v2_progress(uint32_t off, void *ud)
+{
+	(void)ud;
+	post_progress((int)((uint64_t)off * 90 / g_upg.img_size), 1);
+}
+static bool v2_cancel(void *ud)
+{
+	(void)ud;
+	return InterlockedCompareExchange(&g_upg.cancel, 0, 0) != 0;
+}
+
 static DWORD WINAPI udp_upgrade_thread(LPVOID arg)
 {
 	(void)arg;
 	post_log(L"UDP 升级开始");
 
 	uint8_t status = 0;
+	uint16_t v2_chunk = 0;
 	uint32_t sz = g_upg.img_size;
 	const uint8_t *kh = g_upg.has_keyhash ? g_upg.keyhash : NULL;
 	const char *ip = g_upg.cur_ip;
 
-	if (!UdpManager_FwStart(g_upg.udp, ip, sz, kh, &status)) {
+	if (!UdpManager_FwStart(g_upg.udp, ip, sz, kh, &status, &v2_chunk)) {
 		post_log(L"FW_START 无响应 (设备未开机或 IP 错误)");
 		post_done(0);
 		return 0;
@@ -508,31 +523,53 @@ static DWORD WINAPI udp_upgrade_thread(LPVOID arg)
 		return 0;
 	}
 
-	post_log(L"FW_START 成功, 开始发送数据");
+	if (g_upg.cur_udp_v2 && v2_chunk >= 512) {
+		/* V2 勾选且设备为新固件: FW_DATA_V2 窗口流水线 (RTT 被流水线掩盖) */
+		int chunk = (v2_chunk > 1400) ? 1400 : v2_chunk;
+		wchar_t m[128];
 
-	uint32_t off = 0;
-	/* 固件 RX 缓冲 512B, payload <=511B (1B cmd + 511B data = 512B 帧). */
-	const uint32_t CHUNK = 511;
-	while (off < sz) {
-		/* 检查取消 (每个 chunk 一次) */
-		if (InterlockedCompareExchange(&g_upg.cancel, 0, 0)) {
-			post_log(L"用户取消升级");
-			post_done(0);
-			return 0;
-		}
-		uint32_t n = sz - off;
-		if (n > CHUNK) n = CHUNK;
-		uint32_t roff = 0;
-		if (!UdpManager_FwData(g_upg.udp, ip, g_upg.img + off, (int)n, &roff)) {
-			wchar_t m[128];
-			swprintf(m, 128, L"FW_DATA 失败 (offset=%u)", off);
+		swprintf(m, 128, L"FW_START 成功, DATA_V2 窗口模式 (8 x %dB)", chunk);
+		post_log(m);
+		if (!UdpManager_FwDataV2Stream(g_upg.udp, ip, g_upg.img, sz, chunk,
+		                               v2_progress, NULL, v2_cancel)) {
+			const char *e = UdpManager_GetLastError(g_upg.udp);
+			wchar_t werr[192];
+
+			MultiByteToWideChar(CP_UTF8, 0, e, -1, werr, 192);
+			swprintf(m, 128, L"FW_DATA_V2 失败: %ls", werr);
 			post_log(m);
 			post_done(0);
 			return 0;
 		}
-		off += n;
-		/* 进度 0-90%: 数据发送阶段 */
-		post_progress((int)((uint64_t)off * 90 / sz), 1);
+	} else {
+		/* 停等 FW_DATA: 复选框未勾选, 或设备为老固件 (无 v2_chunk 协商字段) */
+		uint32_t off = 0;
+		const uint32_t CHUNK = 511;
+
+		post_log(g_upg.cur_udp_v2
+		         ? L"FW_START 成功 (设备旧固件无 V2, 停等模式)"
+		         : L"FW_START 成功 (兼容模式), 开始发送数据");
+		while (off < sz) {
+			/* 检查取消 (每个 chunk 一次) */
+			if (InterlockedCompareExchange(&g_upg.cancel, 0, 0)) {
+				post_log(L"用户取消升级");
+				post_done(0);
+				return 0;
+			}
+			uint32_t n = sz - off;
+			if (n > CHUNK) n = CHUNK;
+			uint32_t roff = 0;
+			if (!UdpManager_FwData(g_upg.udp, ip, g_upg.img + off, (int)n, &roff)) {
+				wchar_t m[128];
+				swprintf(m, 128, L"FW_DATA 失败 (offset=%u)", off);
+				post_log(m);
+				post_done(0);
+				return 0;
+			}
+			off += n;
+			/* 进度 0-90%: 数据发送阶段 */
+			post_progress((int)((uint64_t)off * 90 / sz), 1);
+		}
 	}
 
 	/* CRC + FwEnd. test 固定 0=永久升级 (不允许测试模式). */
@@ -651,6 +688,7 @@ static void on_start(void)
 		/* UDP: 升级前查询一次设备版本, 刷新 label */
 		on_query_version();
 		g_upg.cur_permanent = true;
+		g_upg.cur_udp_v2 = (SendMessageW(g_upg.hUdpV2, BM_GETCHECK, 0, 0) == BST_CHECKED);
 	} else {
 		/* CAN: 检查已连接 */
 		if (!g_upg.can_connected) {
@@ -796,6 +834,12 @@ static void create_controls(HWND hWnd)
 	g_upg.hUdpLbl = create_label(L"目标 IP:", gx + 12, 62, 56, 14);
 	g_upg.hIp = create_edit(gx + 70, 58, 140, 22, IDC_UPG_IP1, 0);
 	SetWindowTextW(g_upg.hIp, L"192.168.12.101");
+	/* V2 窗口模式复选框 (默认关 = 停等兼容模式; 设备为新固件时勾选可提速,
+	 * 占用与 CAN 行 hCanLbl2 同一横向槽位, 两通道互斥显示不冲突) */
+	g_upg.hUdpV2 = CreateWindowExW(0, L"BUTTON", L"V2 窗口加速",
+		WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+		gx + 226, 58, 130, 22, hWnd, (HMENU)(INT_PTR)IDC_UPG_UDP_V2, g_hInst, NULL);
+	SendMessageW(g_upg.hUdpV2, WM_SETFONT, (WPARAM)g_hFont, TRUE);
 
 	/* 行2 (重叠位置, 默认隐藏): CAN PCAN 设备 + 波特率 + 刷新 + 连接 */
 	g_upg.hCanLbl1 = create_label(L"PCAN 设备:", gx + 12, 62, 64, 14);

@@ -20,16 +20,31 @@ void UdpManager_Destroy(UdpManager *m);
 const char *UdpManager_GetLastError(UdpManager *m);
 
 /* --- 升级命令 (0x01-0x03, 小端; 0x04/0x05 同端口) --- */
-/* FwStart: 发 [0x01][size LE32][keyhash 32B 可选], 回 [0x01][status].
- * keyhash=NULL 时不带 (兼容旧设备); status: 0=失败 1=成功 2=keyhash 不匹配 */
+/* FwStart: 发 [0x01][size LE32][keyhash 32B 可选], 回 [0x01][status][v2_chunk LE16 可选].
+ * keyhash=NULL 时不带 (兼容旧设备); status: 0=失败 1=成功 2=keyhash 不匹配.
+ * out_v2_chunk: 新固件回复携带 DATA_V2 单帧最大数据量 (协商值, 可为 NULL 忽略);
+ * 老固件回复无该字段 → 填 0, 调用方应回退停等 FW_DATA 模式. */
 bool UdpManager_FwStart(UdpManager *m, const char *ip, uint32_t img_size,
-                        const uint8_t keyhash[32], uint8_t *out_status);
+                        const uint8_t keyhash[32], uint8_t *out_status,
+                        uint16_t *out_v2_chunk);
 /* FwData: 发 [0x02][data<=511B], 回 [0x02][offset LE32]. */
 bool UdpManager_FwData(UdpManager *m, const char *ip, const uint8_t *data, int len,
                        uint32_t *out_offset);
 /* FwEnd: 发 [0x03][test 1B][crc16 LE16], 回 [0x03][result 1B]. */
 bool UdpManager_FwEnd(UdpManager *m, const char *ip, uint8_t test, uint16_t crc16,
                       uint8_t *out_result);
+
+/* FW_DATA_V2 (0x06) 窗口流水线进度/取消回调 */
+typedef void (*UdpProgressFn)(uint32_t offset, void *user_data);
+typedef bool (*UdpCancelFn)(void *user_data);
+/* FwDataV2Stream: 每帧 [0x06][offset LE32][data<=chunk], 连发 8 帧不等回复,
+ * 按回复中的期望 offset go-back-N 重传 (设备端按 offset 去重).
+ * chunk 取 FwStart 协商值 (<=1400). progress 每窗口回调已确认字节数;
+ * cancel 返回 true 时中止. 返回 false 时错误见 GetLastError. */
+bool UdpManager_FwDataV2Stream(UdpManager *m, const char *ip,
+                               const uint8_t *data, uint32_t total, int chunk,
+                               UdpProgressFn progress, void *user_data,
+                               UdpCancelFn cancel);
 
 /* --- 配置命令 (0x10+, 大端) --- */
 bool UdpManager_SetIp(UdpManager *m, const char *ip, uint8_t ip4[4], uint8_t *out_ok);  /* 0x10 */

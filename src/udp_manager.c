@@ -189,7 +189,8 @@ const char *UdpManager_GetLastError(UdpManager *m)
  * ================================================================ */
 
 bool UdpManager_FwStart(UdpManager *m, const char *ip, uint32_t img_size,
-                        const uint8_t keyhash[32], uint8_t *out_status)
+                        const uint8_t keyhash[32], uint8_t *out_status,
+                        uint16_t *out_v2_chunk)
 {
 	uint8_t req[1 + 4 + 32];
 	int reqlen = 1 + 4;
@@ -209,6 +210,10 @@ bool UdpManager_FwStart(UdpManager *m, const char *ip, uint32_t img_size,
 	if (!send_recv(m, ip, 0x01, req, reqlen, resp, &rn, 5000)) return false;
 	if (rn < 2) { sprintf(m->last_error, "FW_START 回复过短"); return false; }
 	if (out_status) *out_status = resp[1];
+	/* 新固件回复带 [v2_chunk 2B] (DATA_V2 协商); 老固件无 → 0 (停等模式) */
+	if (out_v2_chunk) {
+		*out_v2_chunk = (rn >= 4) ? (uint16_t)(resp[2] | (resp[3] << 8)) : 0;
+	}
 	return true;
 }
 
@@ -243,6 +248,130 @@ bool UdpManager_FwEnd(UdpManager *m, const char *ip, uint8_t test, uint16_t crc1
 	if (!send_recv(m, ip, 0x03, req, 4, resp, &rn, 10000)) return false;
 	if (rn < 2) { sprintf(m->last_error, "FW_END 回复过短"); return false; }
 	if (out_result) *out_result = resp[1];
+	return true;
+}
+
+/* ==================== FW_DATA_V2 (0x06) 窗口流水线 ==================== */
+
+#define FW_V2_WINDOW      8     /* go-back-N 窗口帧数 */
+#define FW_V2_ACK_TMO     1000  /* 窗口级 ACK 超时 ms (覆盖渐进擦除的扇区擦停顿 ~400ms) */
+#define FW_V2_MAX_RETRY   8     /* 单窗口停滞重试上限 */
+#define FW_V2_CHUNK_MAX   1400  /* 单帧数据上限 (以太网 MTU 内) */
+
+bool UdpManager_FwDataV2Stream(UdpManager *m, const char *ip,
+                               const uint8_t *data, uint32_t total, int chunk,
+                               UdpProgressFn progress, void *user_data,
+                               UdpCancelFn cancel)
+{
+	struct sockaddr_in dst = {0};
+	uint8_t *frame;
+	uint8_t resp[64];
+	uint32_t off;
+	int retries = 0;
+
+	dst.sin_family = AF_INET;
+	dst.sin_port = htons(IOEDGE_UDP_PORT);
+	dst.sin_addr.s_addr = inet_addr(ip);
+	if (dst.sin_addr.s_addr == INADDR_NONE) {
+		sprintf(m->last_error, "非法 IP: %s", ip);
+		return false;
+	}
+	if (chunk <= 0 || chunk > FW_V2_CHUNK_MAX) {
+		sprintf(m->last_error, "FW_DATA_V2 chunk 非法: %d", chunk);
+		return false;
+	}
+	frame = (uint8_t *)malloc(5 + chunk);
+	if (!frame) {
+		sprintf(m->last_error, "内存不足");
+		return false;
+	}
+
+	off = 0;
+	while (off < total) {
+		uint32_t win_end, w, confirmed;
+		DWORD deadline;
+
+		if (cancel && cancel(user_data)) {
+			sprintf(m->last_error, "用户取消升级");
+			free(frame);
+			return false;
+		}
+		win_end = off + FW_V2_WINDOW * (uint32_t)chunk;
+		if (win_end > total || win_end < off) {
+			win_end = total;
+		}
+
+		/* 发送一个窗口 [off, win_end): 连发不等回复 */
+		for (w = off; w < win_end; w += (uint32_t)chunk) {
+			uint32_t n = (win_end - w > (uint32_t)chunk)
+			             ? (uint32_t)chunk : win_end - w;
+
+			frame[0] = 0x06;
+			frame[1] = (uint8_t)w;          /* LE32 */
+			frame[2] = (uint8_t)(w >> 8);
+			frame[3] = (uint8_t)(w >> 16);
+			frame[4] = (uint8_t)(w >> 24);
+			memcpy(frame + 5, data + w, n);
+			if (sendto(m->sock, (const char *)frame, 5 + n, 0,
+			           (struct sockaddr *)&dst, sizeof(dst)) == SOCKET_ERROR) {
+				sprintf(m->last_error, "sendto 失败: %d", WSAGetLastError());
+				free(frame);
+				return false;
+			}
+		}
+
+		/* 收窗口内 ACK (回复始终为设备期望 offset), 追踪最大确认 */
+		deadline = GetTickCount() + FW_V2_ACK_TMO;
+		confirmed = off;
+		while (confirmed < win_end) {
+			DWORD now = GetTickCount();
+			DWORD tmo;
+			struct sockaddr_in from = {0};
+			int fromlen = sizeof(from);
+			int n;
+
+			if (now >= deadline) {
+				break;
+			}
+			tmo = deadline - now;
+			setsockopt(m->sock, SOL_SOCKET, SO_RCVTIMEO,
+			           (const char *)&tmo, sizeof(tmo));
+			n = recvfrom(m->sock, (char *)resp, sizeof(resp), 0,
+			             (struct sockaddr *)&from, &fromlen);
+			if (n <= 0) {
+				break;  /* 超时: 走重传 */
+			}
+			if (n >= 5 && resp[0] == 0x06) {
+				uint32_t roff = (uint32_t)resp[1] | ((uint32_t)resp[2] << 8) |
+				                ((uint32_t)resp[3] << 16) |
+				                ((uint32_t)resp[4] << 24);
+
+				if (roff > confirmed) {
+					confirmed = (roff > total) ? total : roff;
+					retries = 0;  /* 有推进即重置停滞计数 */
+				}
+			}
+		}
+		if (progress) {
+			progress(confirmed, user_data);
+		}
+
+		if (confirmed >= win_end) {
+			off = confirmed;
+			continue;
+		}
+		/* 窗口未完全确认: 从确认处 go-back-N 重传 (重复帧设备自动丢弃) */
+		retries++;
+		if (retries > FW_V2_MAX_RETRY) {
+			sprintf(m->last_error,
+			        "窗口重试超限 (offset=%u, 设备停滞或链路中断)",
+			        confirmed);
+			free(frame);
+			return false;
+		}
+		off = confirmed;
+	}
+	free(frame);
 	return true;
 }
 
