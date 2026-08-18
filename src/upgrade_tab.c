@@ -68,6 +68,7 @@ typedef struct {
 	bool  cur_boot;       /* true=MCUboot 紧急救援模式 (CAN) */
 	bool  cur_udp_v2;     /* true=UDP 使用 DATA_V2 窗口模式 (需设备新固件) */
 	bool  cur_can;        /* true=本次升级走 CAN 通道 (DONE 弹窗按此分发重启) */
+	bool  wait_reboot;    /* true=升级后已发重启命令, 定时器到点确认设备上线 */
 	/* 取消标志 + 线程句柄 */
 	volatile LONG cancel;
 	HANDLE thread;
@@ -77,6 +78,11 @@ static UpgradeTab g_upg;
 static HFONT g_hFont = NULL;
 static const wchar_t *UPGRADE_TAB_CLASS = L"ioEdgeHubUpgradeTabCls";
 static BOOL g_classRegistered = FALSE;
+
+/* 升级后重启确认定时器: 重启命令发出后到点查一次设备版本,
+ * 收尾 "重启中" 状态 (MCUboot 交换约 15-30s, 给 25s) */
+#define UPG_REBOOT_TIMER_ID   1
+#define UPG_REBOOT_WAIT_MS    25000
 
 /* PCAN 波特率 (与 pcan_loader.h BTR 寄存器值对应, can_manager 直传) */
 static const struct { const wchar_t *label; uint32_t btr; } g_bauds[] = {
@@ -928,6 +934,7 @@ static LRESULT CALLBACK upg_wndproc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
 		g_upg.thread = NULL;
 		g_upg.cancel = 0;
 		g_upg.udp_connected = false;
+		g_upg.wait_reboot = false;
 		if (!g_upg.udp) {
 			log_append_ptr(L"错误: UdpManager 创建失败");
 		}
@@ -1021,8 +1028,13 @@ static LRESULT CALLBACK upg_wndproc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
 					                        : UdpManager_Reboot(g_upg.udp, g_upg.cur_ip);
 					if (ok) {
 						SetWindowTextW(g_upg.hStatus, L"升级成功 (重启中)");
-						log_append_ptr(L"重启命令已发送, MCUboot 交换中 (约 15-30 秒)");
+						log_append_ptr(L"重启命令已发送, MCUboot 交换中 (约 15-30 秒, 稍后自动确认)");
+						/* 25s 后查版本确认设备上线, 避免 "重启中" 状态永久悬挂 */
+						g_upg.wait_reboot = true;
+						SetTimer(g_upg.hSelf, UPG_REBOOT_TIMER_ID,
+						         UPG_REBOOT_WAIT_MS, NULL);
 					} else {
+						SetWindowTextW(g_upg.hStatus, L"升级成功 (待重启)");
 						log_append_ptr(L"重启命令发送失败, 请手动断电重启设备");
 					}
 				} else {
@@ -1033,10 +1045,52 @@ static LRESULT CALLBACK upg_wndproc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
 			SetWindowTextW(g_upg.hStatus, L"升级失败");
 			MessageBoxW(g_hMain, L"升级失败 (详见日志)", L"结果", MB_ICONERROR);
 		}
+		/* 升级流程已结束 (含弹窗交互): 进度条清零, 不再保留 100% 满条 */
+		SendMessageW(g_upg.hProgress, PBM_SETPOS, 0, 0);
 		return 0;
 	}
 
+	case WM_TIMER:
+		/* 升级后重启确认: 设备应已完成 MCUboot 交换并带新固件上线,
+		 * 查一次版本收尾; 未响应则提示用户手动确认 */
+		if (wParam == UPG_REBOOT_TIMER_ID) {
+			KillTimer(hWnd, UPG_REBOOT_TIMER_ID);
+			if (!g_upg.wait_reboot) {
+				return 0;
+			}
+			g_upg.wait_reboot = false;
+			/* 用户已又开始新升级: 不打扰 */
+			if (g_upg.thread) {
+				return 0;
+			}
+			char ver[80] = {0};
+			bool up;
+			if (g_upg.cur_can) {
+				up = g_upg.can_connected &&
+				     CanManager_GetVersion(g_upg.can, ver, sizeof(ver));
+			} else {
+				up = g_upg.udp_connected &&
+				     UdpManager_GetVersion(g_upg.udp, g_upg.cur_ip, ver, sizeof(ver));
+			}
+			if (up) {
+				wchar_t wver[160] = {0};
+				wchar_t m[220];
+				MultiByteToWideChar(CP_UTF8, 0, ver, -1, wver, 160);
+				SetWindowTextW(g_upg.hVersion, wver);
+				swprintf(m, 220, L"设备已重启, 新固件运行中: %ls", wver);
+				log_append_ptr(m);
+				SetWindowTextW(g_upg.hStatus, L"升级成功");
+			} else {
+				log_append_ptr(L"设备重启后未响应版本查询 (可能仍在交换), 请稍后手动确认");
+				SetWindowTextW(g_upg.hStatus, L"升级成功 (请确认设备已重启)");
+			}
+		}
+		return 0;
+
 	case WM_DESTROY:
+		/* 取消挂起的重启确认定时器 */
+		KillTimer(hWnd, UPG_REBOOT_TIMER_ID);
+		g_upg.wait_reboot = false;
 		/* 等 worker 退出 (UI 销毁时通常已 DONE; 防御性等待避免悬挂线程) */
 		if (g_upg.thread) {
 			InterlockedExchange(&g_upg.cancel, 1);
