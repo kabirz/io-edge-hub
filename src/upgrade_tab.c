@@ -69,6 +69,7 @@ typedef struct {
 	bool  cur_udp_v2;     /* true=UDP 使用 DATA_V2 窗口模式 (需设备新固件) */
 	bool  cur_can;        /* true=本次升级走 CAN 通道 (DONE 弹窗按此分发重启) */
 	bool  wait_reboot;    /* true=升级后已发重启命令, 定时器到点确认设备上线 */
+	char  old_ver[80];    /* 升级前的设备版本 (重启确认后与新版拼 "旧 → 新") */
 	/* 取消标志 + 线程句柄 */
 	volatile LONG cancel;
 	HANDLE thread;
@@ -351,6 +352,8 @@ static void on_query_version(void)
 		wchar_t wver[160] = {0};
 		MultiByteToWideChar(CP_UTF8, 0, ver, -1, wver, 160);
 		SetWindowTextW(g_upg.hVersion, wver);
+		/* 缓存最近一次查询到的版本: 升级前作为 "旧版本" 快照 */
+		snprintf(g_upg.old_ver, sizeof(g_upg.old_ver), "%s", ver);
 		log_append_ptr(L"版本查询成功");
 	} else {
 		SetWindowTextW(g_upg.hVersion, L"(查询失败)");
@@ -730,6 +733,9 @@ static void on_start(void)
 	SendMessageW(g_upg.hProgress, PBM_SETPOS, 0, 0);
 	SetWindowTextW(g_upg.hStatus, L"升级中...");
 	InterlockedExchange(&g_upg.cancel, 0);
+	g_upg.wait_reboot = false;
+	/* 快照当前版本 label 对应的版本串作 "旧版本" (label 可能含提示文案,
+	 * 直接用缓存的查询结果, 未查询过则为空, 重启确认时不拼箭头) */
 
 	DWORD tid = 0;
 	HANDLE h = CreateThread(NULL, 0,
@@ -1072,15 +1078,25 @@ static LRESULT CALLBACK upg_wndproc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
 				up = g_upg.udp_connected &&
 				     UdpManager_GetVersion(g_upg.udp, g_upg.cur_ip, ver, sizeof(ver));
 			}
-			if (up) {
-				wchar_t wver[160] = {0};
-				wchar_t m[220];
-				MultiByteToWideChar(CP_UTF8, 0, ver, -1, wver, 160);
-				SetWindowTextW(g_upg.hVersion, wver);
-				swprintf(m, 220, L"设备已重启, 新固件运行中: %ls", wver);
-				log_append_ptr(m);
-				SetWindowTextW(g_upg.hStatus, L"升级成功");
+		if (up) {
+			wchar_t wver[160] = {0};
+			wchar_t m[260];
+			MultiByteToWideChar(CP_UTF8, 0, ver, -1, wver, 160);
+			if (g_upg.old_ver[0] != '\0' &&
+			    strcmp(g_upg.old_ver, ver) != 0) {
+				/* 升级前查询过版本且与新版不同: 显示 "旧 → 新" */
+				wchar_t wold[160] = {0};
+				MultiByteToWideChar(CP_UTF8, 0, g_upg.old_ver, -1, wold, 160);
+				swprintf(m, 260, L"%ls  →  %ls", wold, wver);
+				SetWindowTextW(g_upg.hVersion, m);
+				swprintf(m, 260, L"设备已重启, 固件已更新: %ls → %ls", wold, wver);
 			} else {
+				SetWindowTextW(g_upg.hVersion, wver);
+				swprintf(m, 260, L"设备已重启, 新固件运行中: %ls", wver);
+			}
+			log_append_ptr(m);
+			SetWindowTextW(g_upg.hStatus, L"升级成功");
+		} else {
 				log_append_ptr(L"设备重启后未响应版本查询 (可能仍在交换), 请稍后手动确认");
 				SetWindowTextW(g_upg.hStatus, L"升级成功 (请确认设备已重启)");
 			}
