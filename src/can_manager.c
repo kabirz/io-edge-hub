@@ -453,6 +453,11 @@ bool CanManager_EnterBoot(CanManager *m)
 		return false;
 	}
 
+	/* ACK 后设备 boot_go_hook 会清空 msgq (丢弃滞留旧帧) 再进入等待,
+	 * 紧随的 keyhash/START 帧若撞上清理窗口会被误丢 → START 15s 超时.
+	 * 等 50ms 让清理完成后再开始升级流程 */
+	Sleep(50);
+
 	return true;
 }
 
