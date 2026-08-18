@@ -67,6 +67,7 @@ typedef struct {
 	bool  cur_permanent;
 	bool  cur_boot;       /* true=MCUboot 紧急救援模式 (CAN) */
 	bool  cur_udp_v2;     /* true=UDP 使用 DATA_V2 窗口模式 (需设备新固件) */
+	bool  cur_can;        /* true=本次升级走 CAN 通道 (DONE 弹窗按此分发重启) */
 	/* 取消标志 + 线程句柄 */
 	volatile LONG cancel;
 	HANDLE thread;
@@ -583,7 +584,7 @@ static DWORD WINAPI udp_upgrade_thread(LPVOID arg)
 	}
 
 	post_progress(100, 2);
-	post_log(L"升级完成, 设备将重启进行 MCUboot 交换");
+	post_log(L"UDP 升级完成, 请重启设备完成 MCUboot 交换 (可在弹窗或本页『重启』按钮操作)");
 	post_done(1);
 	return 0;
 }
@@ -645,12 +646,12 @@ static DWORD WINAPI can_upgrade_thread(LPVOID arg)
 	if (g_upg.cur_boot) {
 		/* bootloader 模式: 数据写 slot0, CONFIRM 后 MCUboot 直接验证并启动
 		 * 新固件 (无 swap 标记, 不走 SWAP_SCRATCH), 无需再发 REBOOT */
-		post_log(L"救援模式完成: 已写 slot0, MCUboot 验证后启动新固件");
+		post_log(L"救援模式完成: 已写 slot0, MCUboot 验证后启动新固件, 无需重启");
 	} else {
 		/* app 模式: 数据写 slot1, CONFIRM 仅置 swap 标记 (boot_request_upgrade),
-		 * 须发 REBOOT 触发 MCUboot SWAP_SCRATCH 交换 slot1→slot0 */
-		CanManager_Reboot(g_upg.can);
-		post_log(L"CAN 升级完成: REBOOT 已发送, MCUboot swap (slot1→slot0)");
+		 * 须重启设备才触发 MCUboot SWAP_SCRATCH 交换 slot1→slot0。
+		 * 重启由升级完成弹窗的『立即重启』按钮 (或本页『重启』按钮) 触发 */
+		post_log(L"CAN 升级完成, 请重启设备完成 MCUboot 交换 slot1→slot0 (可在弹窗或本页『重启』按钮操作)");
 	}
 	post_done(1);
 	return 0;
@@ -674,6 +675,7 @@ static void on_start(void)
 	int can = current_channel();
 
 	if (!can) {
+		g_upg.cur_can = false;
 		/* UDP: 必须已连接 */
 		if (!g_upg.udp_connected) {
 			MessageBoxW(g_upg.hSelf, L"请先点 \"连接\" 连接设备", L"提示",
@@ -701,6 +703,7 @@ static void on_start(void)
 			            MB_ICONWARNING);
 			return;
 		}
+		g_upg.cur_can = true;
 		/* CAN: 永久升级 (无测试模式) + MCUboot 救援模式复选框 */
 		g_upg.cur_permanent = true;
 		g_upg.cur_boot = (SendMessageW(g_upg.hCanBoot, BM_GETCHECK, 0, 0) == BST_CHECKED);
@@ -994,8 +997,38 @@ static LRESULT CALLBACK upg_wndproc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
 		EnableWindow(g_upg.hBrowse, TRUE);
 		update_button_state();
 		if (success) {
-			SetWindowTextW(g_upg.hStatus, L"升级成功");
-			MessageBoxW(g_hMain, L"升级成功", L"结果", MB_ICONINFORMATION);
+			if (g_upg.cur_boot) {
+				/* MCUboot 救援模式: 数据已写 slot0, CONFIRM 后 MCUboot 直接
+				 * 验证并启动新固件, 无需重启设备 */
+				SetWindowTextW(g_upg.hStatus, L"升级成功");
+				post_log(L"MCUboot 救援模式升级成功, 无需重启设备");
+				MessageBoxW(g_hMain,
+					L"升级成功 (MCUboot 救援模式)\n\n"
+					L"新固件已写入 slot0，MCUboot 将直接验证并启动，\n"
+					L"无需重启设备。",
+					L"升级完成", MB_ICONINFORMATION | MB_OK);
+			} else {
+				/* CAN/UDP app 模式: 数据在 slot1, 仅置了 swap 标记,
+				 * 须重启设备才完成 MCUboot 交换 → 弹窗提示 + 立即重启按钮 */
+				SetWindowTextW(g_upg.hStatus, L"升级成功 (待重启)");
+				if (MessageBoxW(g_hMain,
+					L"升级成功！\n\n"
+					L"新固件已写入 slot1，需要重启设备完成 MCUboot 固件交换。\n"
+					L"是否立即重启设备？\n\n"
+					L"(选『否』可稍后用本页『重启』按钮手动重启)",
+					L"升级完成 - 请重启设备", MB_ICONQUESTION | MB_YESNO) == IDYES) {
+					bool ok = g_upg.cur_can ? CanManager_Reboot(g_upg.can)
+					                        : UdpManager_Reboot(g_upg.udp, g_upg.cur_ip);
+					if (ok) {
+						SetWindowTextW(g_upg.hStatus, L"升级成功 (重启中)");
+						log_append_ptr(L"重启命令已发送, MCUboot 交换中 (约 15-30 秒)");
+					} else {
+						log_append_ptr(L"重启命令发送失败, 请手动断电重启设备");
+					}
+				} else {
+					log_append_ptr(L"请稍后重启设备完成 MCUboot 交换 (本页『重启』按钮或断电重启)");
+				}
+			}
 		} else {
 			SetWindowTextW(g_upg.hStatus, L"升级失败");
 			MessageBoxW(g_hMain, L"升级失败 (详见日志)", L"结果", MB_ICONERROR);
