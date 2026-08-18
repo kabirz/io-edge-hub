@@ -82,9 +82,9 @@ static const wchar_t *UPGRADE_TAB_CLASS = L"ioEdgeHubUpgradeTabCls";
 static BOOL g_classRegistered = FALSE;
 
 /* 升级后重启确认定时器: 重启命令发出后到点查一次设备版本,
- * 收尾 "重启中" 状态 (MCUboot 交换约 15-30s, 给 25s) */
+ * 收尾 "重启中" 状态 (MCUboot 交换约 15-30s, 给 40s 余量) */
 #define UPG_REBOOT_TIMER_ID   1
-#define UPG_REBOOT_WAIT_MS    25000
+#define UPG_REBOOT_WAIT_MS    40000
 
 /* PCAN 波特率 (与 pcan_loader.h BTR 寄存器值对应, can_manager 直传) */
 static const struct { const wchar_t *label; uint32_t btr; } g_bauds[] = {
@@ -802,7 +802,7 @@ static void on_reboot(void)
 		g_upg.pending_reboot = false;
 		g_upg.wait_reboot = true;
 		SetWindowTextW(g_upg.hStatus, L"升级成功 (重启中)");
-		log_append_ptr(L"MCUboot 交换中 (约 15-30 秒, 稍后自动确认)");
+		log_append_ptr(L"MCUboot 交换中 (约 15-40 秒, 稍后自动确认)");
 		SetTimer(g_upg.hSelf, UPG_REBOOT_TIMER_ID, UPG_REBOOT_WAIT_MS, NULL);
 	}
 }
@@ -866,12 +866,14 @@ static void create_controls(HWND hWnd)
 	g_upg.hUdpLbl = create_label(L"目标 IP:", gx + 12, 62, 56, 14);
 	g_upg.hIp = create_edit(gx + 70, 58, 140, 22, IDC_UPG_IP1, 0);
 	SetWindowTextW(g_upg.hIp, L"192.168.12.101");
-	/* V2 窗口模式复选框 (默认关 = 停等兼容模式; 设备为新固件时勾选可提速,
+	/* V2 窗口模式复选框 (默认开 = V2 窗口加速; 设备为老固件无 v2_chunk
+	 * 协商字段时自动回退停等模式, 兼容不受影响.
 	 * 占用与 CAN 行 hCanLbl2 同一横向槽位, 两通道互斥显示不冲突) */
 	g_upg.hUdpV2 = CreateWindowExW(0, L"BUTTON", L"V2 窗口加速",
 		WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
 		gx + 226, 58, 130, 22, hWnd, (HMENU)(INT_PTR)IDC_UPG_UDP_V2, g_hInst, NULL);
 	SendMessageW(g_upg.hUdpV2, WM_SETFONT, (WPARAM)g_hFont, TRUE);
+	SendMessageW(g_upg.hUdpV2, BM_SETCHECK, BST_CHECKED, 0);
 
 	/* 行2 (重叠位置, 默认隐藏): CAN PCAN 设备 + 波特率 + 刷新 + 连接 */
 	g_upg.hCanLbl1 = create_label(L"PCAN 设备:", gx + 12, 62, 64, 14);
@@ -1051,8 +1053,8 @@ static LRESULT CALLBACK upg_wndproc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
 					if (ok) {
 						g_upg.pending_reboot = false;
 						SetWindowTextW(g_upg.hStatus, L"升级成功 (重启中)");
-						log_append_ptr(L"重启命令已发送, MCUboot 交换中 (约 15-30 秒, 稍后自动确认)");
-						/* 25s 后查版本确认设备上线, 避免 "重启中" 状态永久悬挂 */
+						log_append_ptr(L"重启命令已发送, MCUboot 交换中 (约 15-40 秒, 稍后自动确认)");
+						/* 40s 后查版本确认设备上线, 避免 "重启中" 状态永久悬挂 */
 						g_upg.wait_reboot = true;
 						SetTimer(g_upg.hSelf, UPG_REBOOT_TIMER_ID,
 						         UPG_REBOOT_WAIT_MS, NULL);
