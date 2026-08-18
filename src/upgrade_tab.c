@@ -86,6 +86,11 @@ static BOOL g_classRegistered = FALSE;
 #define UPG_REBOOT_TIMER_ID   1
 #define UPG_REBOOT_WAIT_MS    40000
 
+/* 救援模式升级确认定时器: CONFIRM 后 MCUboot 直接验证并启动新固件
+ * (无 swap, 几秒内上线), 5s 后查一次版本刷新显示 */
+#define UPG_BOOT_OK_TIMER_ID  2
+#define UPG_BOOT_OK_WAIT_MS   5000
+
 /* PCAN 波特率 (与 pcan_loader.h BTR 寄存器值对应, can_manager 直传) */
 static const struct { const wchar_t *label; uint32_t btr; } g_bauds[] = {
 	{ L"250 kbps (默认)", PCAN_BAUD_250K },
@@ -1025,17 +1030,19 @@ static LRESULT CALLBACK upg_wndproc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
 		EnableWindow(g_upg.hBrowse, TRUE);
 		update_button_state();
 		if (success) {
-			if (g_upg.cur_boot) {
-				/* MCUboot 救援模式: 数据已写 slot0, CONFIRM 后 MCUboot 直接
-				 * 验证并启动新固件, 无需重启设备 */
-				SetWindowTextW(g_upg.hStatus, L"升级成功");
-				post_log(L"MCUboot 救援模式升级成功, 无需重启设备");
-				MessageBoxW(g_hMain,
-					L"升级成功 (MCUboot 救援模式)\n\n"
-					L"新固件已写入 slot0，MCUboot 将直接验证并启动，\n"
-					L"无需重启设备。",
-					L"升级完成", MB_ICONINFORMATION | MB_OK);
-			} else {
+		if (g_upg.cur_boot) {
+			/* MCUboot 救援模式: 数据已写 slot0, CONFIRM 后 MCUboot 直接
+			 * 验证并启动新固件, 无需重启设备 */
+			SetWindowTextW(g_upg.hStatus, L"升级成功");
+			post_log(L"MCUboot 救援模式升级成功, 无需重启设备");
+			MessageBoxW(g_hMain,
+				L"升级成功 (MCUboot 救援模式)\n\n"
+				L"新固件已写入 slot0，MCUboot 将直接验证并启动，\n"
+				L"无需重启设备。",
+				L"升级完成", MB_ICONINFORMATION | MB_OK);
+			/* MCUboot 验证+启动新固件需数秒, 5s 后自动查版本刷新显示 */
+			SetTimer(g_upg.hSelf, UPG_BOOT_OK_TIMER_ID, UPG_BOOT_OK_WAIT_MS, NULL);
+		} else {
 				/* CAN/UDP app 模式: 数据在 slot1, 仅置了 swap 标记,
 				 * 须重启设备才完成 MCUboot 交换 → 弹窗提示 + 立即重启按钮.
 				 * pending_reboot 标记 "升级成功待重启": 弹窗选否后手动点
@@ -1097,27 +1104,58 @@ static LRESULT CALLBACK upg_wndproc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
 				up = g_upg.udp_connected &&
 				     UdpManager_GetVersion(g_upg.udp, g_upg.cur_ip, ver, sizeof(ver));
 			}
-		if (up) {
-			wchar_t wver[160] = {0};
-			wchar_t m[260];
-			MultiByteToWideChar(CP_UTF8, 0, ver, -1, wver, 160);
-			if (g_upg.old_ver[0] != '\0' &&
-			    strcmp(g_upg.old_ver, ver) != 0) {
-				/* 升级前查询过版本且与新版不同: 显示 "旧 → 新" */
-				wchar_t wold[160] = {0};
-				MultiByteToWideChar(CP_UTF8, 0, g_upg.old_ver, -1, wold, 160);
-				swprintf(m, 260, L"%ls  →  %ls", wold, wver);
-				SetWindowTextW(g_upg.hVersion, m);
-				swprintf(m, 260, L"设备已重启, 固件已更新: %ls → %ls", wold, wver);
+			if (up) {
+				wchar_t wver[160] = {0};
+				wchar_t m[260];
+				MultiByteToWideChar(CP_UTF8, 0, ver, -1, wver, 160);
+				if (g_upg.old_ver[0] != '\0' &&
+				    strcmp(g_upg.old_ver, ver) != 0) {
+					/* 升级前查询过版本且与新版不同: 显示 "旧 → 新" */
+					wchar_t wold[160] = {0};
+					MultiByteToWideChar(CP_UTF8, 0, g_upg.old_ver, -1, wold, 160);
+					swprintf(m, 260, L"%ls  →  %ls", wold, wver);
+					SetWindowTextW(g_upg.hVersion, m);
+					swprintf(m, 260, L"设备已重启, 固件已更新: %ls → %ls", wold, wver);
+				} else {
+					SetWindowTextW(g_upg.hVersion, wver);
+					swprintf(m, 260, L"设备已重启, 新固件运行中: %ls", wver);
+				}
+				log_append_ptr(m);
+				SetWindowTextW(g_upg.hStatus, L"升级成功");
 			} else {
-				SetWindowTextW(g_upg.hVersion, wver);
-				swprintf(m, 260, L"设备已重启, 新固件运行中: %ls", wver);
-			}
-			log_append_ptr(m);
-			SetWindowTextW(g_upg.hStatus, L"升级成功");
-		} else {
 				log_append_ptr(L"设备重启后未响应版本查询 (可能仍在交换), 请稍后手动确认");
 				SetWindowTextW(g_upg.hStatus, L"升级成功 (请确认设备已重启)");
+			}
+			return 0;
+		}
+		/* 救援模式升级确认: MCUboot 已直接启动新固件, 查版本刷新显示
+		 * (含 "旧 → 新" 版本对比) */
+		if (wParam == UPG_BOOT_OK_TIMER_ID) {
+			KillTimer(hWnd, UPG_BOOT_OK_TIMER_ID);
+			/* 用户已又开始新升级: 不打扰 */
+			if (g_upg.thread) {
+				return 0;
+			}
+			char ver[80] = {0};
+			bool up = CanManager_GetVersion(g_upg.can, ver, sizeof(ver));
+			if (up) {
+				wchar_t wver[160] = {0};
+				wchar_t m[260];
+				MultiByteToWideChar(CP_UTF8, 0, ver, -1, wver, 160);
+				if (g_upg.old_ver[0] != '\0' &&
+				    strcmp(g_upg.old_ver, ver) != 0) {
+					wchar_t wold[160] = {0};
+					MultiByteToWideChar(CP_UTF8, 0, g_upg.old_ver, -1, wold, 160);
+					swprintf(m, 260, L"%ls  →  %ls", wold, wver);
+					SetWindowTextW(g_upg.hVersion, m);
+					swprintf(m, 260, L"新固件已启动: %ls → %ls", wold, wver);
+				} else {
+					SetWindowTextW(g_upg.hVersion, wver);
+					swprintf(m, 260, L"新固件已启动: %ls", wver);
+				}
+				log_append_ptr(m);
+			} else {
+				log_append_ptr(L"新固件版本查询未响应 (MCUboot 可能仍在验证), 请稍后手动查询");
 			}
 		}
 		return 0;
@@ -1125,6 +1163,7 @@ static LRESULT CALLBACK upg_wndproc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
 	case WM_DESTROY:
 		/* 取消挂起的重启确认定时器 */
 		KillTimer(hWnd, UPG_REBOOT_TIMER_ID);
+		KillTimer(hWnd, UPG_BOOT_OK_TIMER_ID);
 		g_upg.wait_reboot = false;
 		g_upg.pending_reboot = false;
 		/* 等 worker 退出 (UI 销毁时通常已 DONE; 防御性等待避免悬挂线程) */
