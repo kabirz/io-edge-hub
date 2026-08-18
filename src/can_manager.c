@@ -13,7 +13,8 @@
  *
  * MCUboot 紧急救援模式 (CanManager_EnterBoot):
  *   发 REBOOT → 等 0x106 探测帧 → 回 0x107 → 之后 keyhash/START/DATA/CONFIRM
- *   流程在 app 与 bootloader 完全共用; bootloader 内 CONFIRM 后本会话直接 swap.
+ *   流程在 app 与 bootloader 完全共用; bootloader 模式数据写 slot0,
+ *   CONFIRM 后 MCUboot 直接验证启动 (无 swap).
  *
  * PCAN 调用框架 (Initialize/Write/Read/LookUpChannel/FilterMessages) 复用
  * handler-receiver src/can_manager.c 的模式, 但改成同步 req/resp 模型
@@ -251,7 +252,8 @@ bool CanManager_IsConnected(const CanManager *m)
  * 流程 (对齐固件 can_fw_upgrade.c handle_platform_rx / handle_fw_data):
  *  1. keyhash (可选): 5 帧 0x104, data[0]=seq(0..4), data[1..7]=7B chunk.
  *     固件 handle_keyhash_frame 累积 rx_keybuf, START 时校验.
- *  2. START (0x101 cmd=0, arg=size): 固件擦 slot1 flash 后回 OFFSET(0),
+ *  2. START (0x101 cmd=0, arg=size): 固件按镜像大小擦 flash (4KB 向上取整;
+ *     app 模式擦 slot1, bootloader 模式擦 slot0) 后回 OFFSET(0),
  *     keyhash 不符回 KEYHASH_ERROR(6), flash 擦失败回 FLASH_ERROR(4).
  *     注: 固件校验 DLC==8, 故 START 帧 DLC 必须为 8.
  *  3. 流式 0x103 (8B/帧): 固件每写 64B 回 OFFSET 做流控, 写满总量回 UPDATE_SUCCESS.
@@ -310,7 +312,7 @@ bool CanManager_FirmwareUpgrade(CanManager *m, const uint8_t *img, uint32_t size
 			return false;
 		}
 		uint32_t code = 0, arg = 0;
-		/* START 含 flash 整区擦除 (512KB-1MB), 给 15s (与 handler-receiver 一致) */
+		/* START 擦 flash (按镜像大小 4KB 向上取整), 给 15s 余量 */
 		if (!can_read_resp(m, CAN_ID_IO_RESP, 15000, &code, &arg)) {
 			return false;
 		}
@@ -368,7 +370,10 @@ bool CanManager_FirmwareUpgrade(CanManager *m, const uint8_t *img, uint32_t size
 	}
 
 	/* 4. CONFIRM (cmd=1, arg=permanent?1:0 LE32, DLC=8).
-	 * 固件 boot_request_upgrade 后回 CONFIRM(3, arg=0x55AA55AA). */
+	 * app 模式: 数据已写 slot1, 固件 boot_request_upgrade 置 swap 标记后回
+	 * CONFIRM(3, arg=0x55AA55AA), 须由主机再发 REBOOT 触发 SWAP_SCRATCH;
+	 * bootloader 模式: 数据已写 slot0, 固件直接回 CONFIRM, MCUboot 随即
+	 * 验证并启动新固件 (无 swap, 无需 REBOOT). */
 	{
 		uint8_t fr[8] = {0};
 		fr[0] = IO_FW_CMD_CONFIRM;
@@ -408,7 +413,8 @@ bool CanManager_FirmwareUpgrade(CanManager *m, const uint8_t *img, uint32_t size
  *      轮询 (1ms 粒度) 不会错过.
  *   3. 回 0x107 (1B) 应答, 设备随即进入 ~15s 固件升级等待窗口
  * 之后 FirmwareUpgrade 的 keyhash/START/DATA/CONFIRM 流程在 app 与 bootloader
- * 完全共用; bootloader 内 CONFIRM 后设备在本会话内直接完成 swap (无需 REBOOT).
+ * 完全共用; bootloader 模式数据写 slot0, CONFIRM 后 MCUboot 直接验证并启动
+ * 新固件 (无 swap 标记, 不走 SWAP_SCRATCH, 无需再发 REBOOT).
  * ================================================================ */
 
 bool CanManager_EnterBoot(CanManager *m)

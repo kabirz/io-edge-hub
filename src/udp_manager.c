@@ -205,7 +205,7 @@ bool UdpManager_FwStart(UdpManager *m, const char *ip, uint32_t img_size,
 	}
 	uint8_t resp[64];
 	int rn = 0;
-	/* FW_START: 固件擦除整个 slot1 分区后才回 (512KB-1MB flash 擦除常超 1s),
+	/* FW_START: 固件按镜像大小擦 slot1 (4KB 向上取整, 常超 1s),
 	 * 给 5s 超时 (与 handler-receiver 一致). */
 	if (!send_recv(m, ip, 0x01, req, reqlen, resp, &rn, 5000)) return false;
 	if (rn < 2) { sprintf(m->last_error, "FW_START 回复过短"); return false; }

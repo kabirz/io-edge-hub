@@ -80,7 +80,8 @@ bool CanManager_FirmwareUpgrade(CanManager *m, const uint8_t *img, uint32_t size
  *    的 ~500ms 探测窗口, 调用方应在此之前提示用户手动重启
  * 3. 回 0x107 应答 (1B), 设备随即进入 ~15s 固件升级等待窗口
  * 之后调 FirmwareUpgrade 即可 (keyhash/START/DATA/CONFIRM 协议在 app 与
- * bootloader 共用); bootloader 内 CONFIRM 后设备本会话内完成 swap, 无需重启.
+ * bootloader 共用); bootloader 模式数据写 slot0, CONFIRM 后 MCUboot 直接
+ * 验证并启动新固件 (无 swap, 无需重启).
  * 成功返回 true. */
 bool CanManager_EnterBoot(CanManager *m);
 

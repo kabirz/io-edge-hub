@@ -643,9 +643,14 @@ static DWORD WINAPI can_upgrade_thread(LPVOID arg)
 
 	post_progress(100, 2);
 	if (g_upg.cur_boot) {
-		post_log(L"救援模式完成, 设备将在 bootloader 本会话内交换固件");
+		/* bootloader 模式: 数据写 slot0, CONFIRM 后 MCUboot 直接验证并启动
+		 * 新固件 (无 swap 标记, 不走 SWAP_SCRATCH), 无需再发 REBOOT */
+		post_log(L"救援模式完成: 已写 slot0, MCUboot 验证后启动新固件");
 	} else {
-		post_log(L"CAN 升级完成, 设备将重启");
+		/* app 模式: 数据写 slot1, CONFIRM 仅置 swap 标记 (boot_request_upgrade),
+		 * 须发 REBOOT 触发 MCUboot SWAP_SCRATCH 交换 slot1→slot0 */
+		CanManager_Reboot(g_upg.can);
+		post_log(L"CAN 升级完成: REBOOT 已发送, MCUboot swap (slot1→slot0)");
 	}
 	post_done(1);
 	return 0;
