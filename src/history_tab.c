@@ -5,8 +5,9 @@
  *   AI 记录 16B: [type u16=2][ts u32][ai_en u16][ai_val[4] u16]
  * 与固件 include/init.h 的 struct his_data (__packed) 完全一致.
  *
- * 界面: 打开 .raw → 解析全部记录 → ListView 展示 (序号/时间/类型/值详情),
- *       可导出 CSV.
+ * 界面: 打开 .raw → 解析全部记录 → ListView 虚拟模式展示 (序号/时间/类型/值详情),
+ *       可导出 CSV. 记录可能达数万条, 虚拟模式 (LVS_OWNERDATA) 下控件只为
+ *       可见行经 LVN_GETDISPINFOW 按需取文本, 避免逐条插入卡死界面.
  */
 #include "history_tab.h"
 #include "resource.h"
@@ -190,41 +191,45 @@ static void fmt_bin16(uint16_t v, wchar_t *out)
 	out[16] = L'\0';
 }
 
-/* ===== ListView ===== */
+/* ===== ListView (LVS_OWNERDATA 虚拟模式) ===== */
 
-static void populate_listview(void)
+/* 生成第 row 行第 col 列的显示文本 (0=序号 1=时间 2=类型 3=值详情).
+ * 仅在控件请求可见行时调用. */
+static void rec_get_text(int row, int col, wchar_t *out, int cap)
 {
-	ListView_DeleteAllItems(g_his.hList);
-	for (int i = 0; i < g_rec_count; i++) {
-		const HistRec *r = &g_recs[i];
-		wchar_t s_idx[16], s_time[32], s_type[8], s_val[220];
-
-		swprintf(s_idx, 16, L"%d", i + 1);
-		fmt_time_w(r->ts, s_time, 32);
-		swprintf(s_type, 8, L"%ls", r->type == HIST_DI_TYPE ? L"DI" : L"AI");
+	const HistRec *r = &g_recs[row];
+	switch (col) {
+	case 0:
+		swprintf(out, cap, L"%d", row + 1);
+		break;
+	case 1:
+		fmt_time_w(r->ts, out, cap);
+		break;
+	case 2:
+		swprintf(out, cap, L"%ls", r->type == HIST_DI_TYPE ? L"DI" : L"AI");
+		break;
+	default:
 		if (r->type == HIST_DI_TYPE) {
 			wchar_t bin[17];
 			fmt_bin16(r->di_val, bin);
-			swprintf(s_val, 220, L"使能=0x%04X  值=0x%04X  DI1-16: %ls",
+			swprintf(out, cap, L"使能=0x%04X  值=0x%04X  DI1-16: %ls",
 			         r->en, r->di_val, bin);
 		} else {
-			swprintf(s_val, 220,
+			swprintf(out, cap,
 			         L"AI1=%.2fmA  AI2=%.2fmA  AI3=%.2fV  AI4=%.2fV  (使能=0x%04X)",
 			         r->ai_val[0] / 100.0, r->ai_val[1] / 100.0,
 			         r->ai_val[2] / 100.0, r->ai_val[3] / 100.0, r->en);
 		}
-
-		LVITEMW it;
-		memset(&it, 0, sizeof(it));
-		it.mask = LVIF_TEXT;
-		it.iItem = i;
-		it.iSubItem = 0;
-		it.pszText = s_idx;
-		ListView_InsertItem(g_his.hList, &it);
-		ListView_SetItemText(g_his.hList, i, 1, s_time);
-		ListView_SetItemText(g_his.hList, i, 2, s_type);
-		ListView_SetItemText(g_his.hList, i, 3, s_val);
+		break;
 	}
+}
+
+/* 虚拟模式: 只需告知记录总数, 行文本由 LVN_GETDISPINFOW 按需生成,
+ * 数万条记录也是瞬间完成, 滚动不卡. */
+static void populate_listview(void)
+{
+	ListView_SetItemCountEx(g_his.hList, g_rec_count,
+	                        LVSICF_NOINVALIDATEALL | LVSICF_NOSCROLL);
 }
 
 /* ===== 打开文件 / 解析 ===== */
@@ -365,9 +370,10 @@ static void create_controls(HWND hWnd)
 	g_his.hExport = create_button(L"导出 CSV", gx + 108, 8, 80, 24, IDC_HIST_EXPORT);
 	g_his.hInfo = create_label(L"(未打开文件)", gx + 196, 12, 560, 14);
 
-	/* 记录 ListView */
+	/* 记录 ListView (虚拟模式: 数据在 g_recs, 控件按需取可见行文本) */
 	g_his.hList = CreateWindowExW(0, WC_LISTVIEWW, L"",
-		WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | WS_BORDER,
+		WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS |
+		WS_BORDER | LVS_OWNERDATA,
 		gx + 12, 40, gw - 24, 480, hWnd,
 		(HMENU)(INT_PTR)IDC_HIST_LIST, g_hInst, NULL);
 	SendMessageW(g_his.hList, WM_SETFONT, (WPARAM)g_hFont, TRUE);
@@ -410,6 +416,33 @@ static LRESULT CALLBACK hist_wndproc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM 
 	case WM_COMMAND:
 		on_command(wParam);
 		return 0;
+	case WM_NOTIFY: {
+		NMHDR *hdr = (NMHDR *)lParam;
+		if (hdr->hwndFrom != g_his.hList)
+			break;
+		if (hdr->code == LVN_GETDISPINFOW) {
+			NMLVDISPINFOW *di = (NMLVDISPINFOW *)lParam;
+			if ((di->item.mask & LVIF_TEXT) && di->item.cchTextMax > 0)
+				rec_get_text(di->item.iItem, di->item.iSubItem,
+				             di->item.pszText, di->item.cchTextMax);
+			return 0;
+		}
+		if (hdr->code == LVN_ODFINDITEMW) {
+			/* 键盘输入跳转: 在序号列做前缀匹配, 与普通模式行为一致 */
+			NMLVFINDITEMW *fi = (NMLVFINDITEMW *)lParam;
+			if (fi->lvfi.flags & (LVFI_STRING | LVFI_PARTIAL)) {
+				wchar_t txt[16];
+				size_t len = wcslen(fi->lvfi.psz);
+				for (int i = 0; i < g_rec_count; i++) {
+					rec_get_text(i, 0, txt, 16);
+					if (_wcsnicmp(txt, fi->lvfi.psz, len) == 0)
+						return i;
+				}
+			}
+			return -1;
+		}
+		break;
+	}
 	case WM_SIZE:
 		/* 控件保持固定位置 (与其它 tab 一致). */
 		return 0;
