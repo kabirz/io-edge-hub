@@ -26,6 +26,7 @@ struct MbClient {
 	MbTransport transport;
 	bool connected;
 	uint8_t unit_id;
+	bool last_no_resp;        /* 上次事务失败是否为 "完全无响应" (见头文件) */
 	/* TCP */
 	SOCKET sock;
 	uint16_t tcp_tid;        /* MBAP transaction id, 自增 */
@@ -114,6 +115,7 @@ static bool tcp_is_dead_error(int err)
 static int mb_transact(MbClient *m, const uint8_t *pdu, int pdulen,
                        uint8_t *out_pdu, int out_cap)
 {
+	m->last_no_resp = false;
 	if (m->transport == MB_TCP) {
 		/* ===== TCP 分支 ===== */
 		uint8_t adu[260];
@@ -151,6 +153,7 @@ static int mb_transact(MbClient *m, const uint8_t *pdu, int pdulen,
 					m->connected = false;
 				} else {
 					sprintf(m->last_error, "TCP 响应超时");
+					m->last_no_resp = true;
 				}
 				return 0;
 			}
@@ -220,6 +223,7 @@ static int mb_transact(MbClient *m, const uint8_t *pdu, int pdulen,
 		uint8_t hdr[2];
 		if (rtu_read_n(m, hdr, 2) < 2) {
 			sprintf(m->last_error, "RTU 响应超时");
+			m->last_no_resp = true;
 			return 0;
 		}
 		uint8_t fc = hdr[1];
@@ -372,6 +376,11 @@ void MbClient_Destroy(MbClient *m)
 const char *MbClient_GetLastError(MbClient *m)
 {
 	return m ? m->last_error : "NULL manager";
+}
+
+bool MbClient_LastNoResponse(const MbClient *m)
+{
+	return m ? m->last_no_resp : false;
 }
 
 bool MbClient_IsConnected(const MbClient *m)

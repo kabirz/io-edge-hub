@@ -17,6 +17,10 @@ MbClient *MbClient_Create(void);
 void MbClient_Destroy(MbClient *m);
 const char *MbClient_GetLastError(MbClient *m);
 bool MbClient_IsConnected(const MbClient *m);
+/* 上一次失败的事务是否为 "对端完全无响应" (等待响应超时, 未收到任何字节).
+ * 用于调用方区分 "设备不说话" (重试/逐个读只会逐个超时, 应提前放弃) 与
+ * "设备有应答但拒绝/校验错" (回退逐个读仍可能成功). */
+bool MbClient_LastNoResponse(const MbClient *m);
 MbTransport MbClient_GetTransport(const MbClient *m);
 
 /* TCP: 连 ip:port (默认 502), 后续读写用 unit_id */

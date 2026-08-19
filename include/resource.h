@@ -68,7 +68,6 @@
 #define IDC_UPG_VERSION         2045   /* 静态: 设备版本号显示 */
 #define IDC_UPG_GETVER          2046   /* 查询版本 按钮 */
 #define IDC_UPG_REBOOT          2047   /* 重启设备 按钮 */
-#define IDC_UPG_UDP_V2          2048   /* UDP V2 窗口模式 复选框 */
 
 /* ===== tab3 控件 ID (3xxx) — Task 8 Modbus 调试 ===== */
 #define IDC_MB_CHAN_TCP         3001   /* 单选: TCP 通道 */
@@ -80,7 +79,7 @@
 #define IDC_MB_PORT             3014   /* TCP 端口 (默认 502) */
 #define IDC_MB_COM              3020   /* 串口下拉 COM1-COM32 */
 #define IDC_MB_BAUD             3021   /* 波特率下拉 */
-#define IDC_MB_UID              3022   /* 从机 ID */
+#define IDC_MB_UID              3022   /* RTU 从机 ID */
 #define IDC_MB_CONNECT          3030   /* 连接按钮 */
 #define IDC_MB_DISCONNECT       3031   /* 断开按钮 */
 #define IDC_MB_STATUS           3032   /* 状态灯 + 文字 */

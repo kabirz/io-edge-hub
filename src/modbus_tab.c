@@ -84,7 +84,7 @@ typedef struct {
 	/* 通道单选 */
 	HWND hChanTcp, hChanRtu;
 	/* TCP 行 */
-	HWND hTcpLbl1, hIp, hTcpLbl2, hPort, hTcpLbl3, hUidTcp;
+	HWND hTcpLbl1, hIp, hTcpLbl2, hPort;
 	/* RTU 行 */
 	HWND hRtuLbl1, hCom, hRtuLbl2, hBaud, hRtuLbl3, hUidRtu;
 	/* 连接 + 状态 */
@@ -122,10 +122,32 @@ static const int g_bauds[] = { 4800, 9600, 19200, 38400, 57600, 115200 };
 #define BAUD_COUNT (int)(sizeof(g_bauds) / sizeof(g_bauds[0]))
 
 /* 枚举系统中实际存在的 COM 口填入下拉框 (SetupAPI, 而非硬编码 COM1..COM32).
+ * 按 COM 后的数字升序排列 (COM1 COM2 ... COM10, 字符串序会错把 COM10 排在 COM2 前).
  * 无串口时下拉为空 (连接时会提示先选择串口). */
+
+/* qsort 比较器: 解析 "COM<n>" 的 n; 解析失败的串排在最后 (按字符串序). */
+static int com_port_cmp(const void *a, const void *b)
+{
+	const wchar_t *pa = (const wchar_t *)a;
+	const wchar_t *pb = (const wchar_t *)b;
+	int na = -1, nb = -1;
+	swscanf(pa, L"COM%d", &na);
+	swscanf(pb, L"COM%d", &nb);
+	if (na >= 0 && nb >= 0) {
+		if (na != nb) return na < nb ? -1 : 1;
+		return wcscmp(pa, pb);
+	}
+	if (na >= 0) return -1;
+	if (nb >= 0) return 1;
+	return wcscmp(pa, pb);
+}
+
 static void enumerate_com_ports(HWND hCombo)
 {
-	SendMessageW(hCombo, CB_RESETCONTENT, 0, 0);
+	/* 上限 64 个: 物理串口数远达不到, 超出忽略 */
+	wchar_t names[64][32];
+	int count = 0;
+
 	HDEVINFO hdevinfo = SetupDiGetClassDevsW(&GUID_DEVCLASS_PORTS, NULL, NULL,
 	                                         DIGCF_PRESENT);
 	if (hdevinfo == INVALID_HANDLE_VALUE) return;
@@ -135,6 +157,7 @@ static void enumerate_com_ports(HWND hCombo)
 	devdata.cbSize = sizeof(devdata);
 
 	for (DWORD idx = 0; SetupDiEnumDeviceInfo(hdevinfo, idx, &devdata); idx++) {
+		if (count >= 64) break;
 		HKEY hkey = SetupDiOpenDevRegKey(hdevinfo, &devdata, DICS_FLAG_GLOBAL, 0,
 		                                 DIREG_DEV, KEY_READ);
 		if (hkey == INVALID_HANDLE_VALUE) continue;
@@ -143,11 +166,21 @@ static void enumerate_com_ports(HWND hCombo)
 		if (RegQueryValueExW(hkey, L"PortName", NULL, &type,
 		                     (LPBYTE)portname, &size) == ERROR_SUCCESS &&
 		    type == REG_SZ && portname[0] != L'\0') {
-			SendMessageW(hCombo, CB_ADDSTRING, 0, (LPARAM)portname);
+			size_t plen = wcslen(portname);
+			if (plen > 31) plen = 31;
+			memcpy(names[count], portname, plen * sizeof(wchar_t));
+			names[count][plen] = L'\0';
+			count++;
 		}
 		RegCloseKey(hkey);
 	}
 	SetupDiDestroyDeviceInfoList(hdevinfo);
+
+	qsort(names, (size_t)count, sizeof(names[0]), com_port_cmp);
+
+	SendMessageW(hCombo, CB_RESETCONTENT, 0, 0);
+	for (int i = 0; i < count; i++)
+		SendMessageW(hCombo, CB_ADDSTRING, 0, (LPARAM)names[i]);
 
 	/* 默认选中第一个实际存在的 COM 口 */
 	if (SendMessageW(hCombo, CB_GETCOUNT, 0, 0) > 0) {
@@ -270,13 +303,26 @@ static bool read_ip_edit(HWND hEdit, uint8_t ip4[4])
 static void apply_channel_visibility(void)
 {
 	int rtu = current_channel();
+	/* 每次切到 RTU 重新枚举 COM 口 (软件启动后才插入的串口也能识别).
+	 * 原选中串口仍存在则保持选中, 否则回落到默认 (第一个). */
+	if (rtu) {
+		wchar_t prev[32] = {0};
+		int sel = (int)SendMessageW(g_mb.hCom, CB_GETCURSEL, 0, 0);
+		if (sel >= 0)
+			SendMessageW(g_mb.hCom, CB_GETLBTEXT, sel, (LPARAM)prev);
+		enumerate_com_ports(g_mb.hCom);
+		if (prev[0]) {
+			int match = (int)SendMessageW(g_mb.hCom, CB_FINDSTRINGEXACT,
+			                               (WPARAM)-1, (LPARAM)prev);
+			if (match >= 0)
+				SendMessageW(g_mb.hCom, CB_SETCURSEL, match, 0);
+		}
+	}
 	/* TCP 行 */
 	ShowWindow(g_mb.hTcpLbl1, rtu ? SW_HIDE : SW_SHOW);
 	ShowWindow(g_mb.hIp, rtu ? SW_HIDE : SW_SHOW);
 	ShowWindow(g_mb.hTcpLbl2, rtu ? SW_HIDE : SW_SHOW);
 	ShowWindow(g_mb.hPort,    rtu ? SW_HIDE : SW_SHOW);
-	ShowWindow(g_mb.hTcpLbl3, rtu ? SW_HIDE : SW_SHOW);
-	ShowWindow(g_mb.hUidTcp,  rtu ? SW_HIDE : SW_SHOW);
 	/* RTU 行 */
 	ShowWindow(g_mb.hRtuLbl1, rtu ? SW_SHOW : SW_HIDE);
 	ShowWindow(g_mb.hCom,     rtu ? SW_SHOW : SW_HIDE);
@@ -499,11 +545,16 @@ static void refresh_reg_table(void)
 	uint32_t vals[REG_COUNT];
 	bool ok[REG_COUNT];
 
-	/* holding 18 个连续读 (offset 0x00-0x11, 一次 FC03 读 18 个); 失败改逐个读 */
+	/* holding 18 个连续读 (offset 0x00-0x11, 一次 FC03 读 18 个); 失败改逐个读.
+	 * 逐个读只对 "设备有应答但拒绝整段" 有意义; 完全无响应 (超时) 时逐个读
+	 * 只会每个再等 ~1s 超时, 直接整批标失败. */
 	uint16_t hold[HOLDING_PHYS_COUNT];
 	bool hold_ok = MbClient_ReadHolding(g_mb.mb, 0, HOLDING_PHYS_COUNT, hold);
+	bool hold_each = false;
 	if (!hold_ok) {
-		log_append(L"批量读 holding 失败, 改逐个读");
+		hold_each = !MbClient_LastNoResponse(g_mb.mb);
+		log_append(hold_each ? L"批量读 holding 失败, 改逐个读"
+		                      : L"批量读 holding 失败 (设备无响应)");
 	}
 	for (int i = 0; i < HOLDING_COUNT; i++) {
 		const RegMeta *r = &g_regs[i];
@@ -516,14 +567,17 @@ static void refresh_reg_table(void)
 				vals[i] = hold[r->addr];
 			}
 		} else {
-			ok[i] = read_holding_row(r->addr, &vals[i]);
+			ok[i] = hold_each && read_holding_row(r->addr, &vals[i]);
 		}
 	}
-	/* input 6 个连续读 (offset 0x00-0x05); 失败改逐个读 */
+	/* input 6 个连续读 (offset 0x00-0x05); 失败改逐个读 (无响应同理跳过) */
 	uint16_t inp[6];
 	bool inp_ok = MbClient_ReadInput(g_mb.mb, 0, 6, inp);
+	bool inp_each = false;
 	if (!inp_ok) {
-		log_append(L"批量读 input 失败, 改逐个读");
+		inp_each = !MbClient_LastNoResponse(g_mb.mb);
+		log_append(inp_each ? L"批量读 input 失败, 改逐个读"
+		                      : L"批量读 input 失败 (设备无响应)");
 	}
 	for (int i = 0; i < 6; i++) {
 		int row = HOLDING_COUNT + i;
@@ -532,7 +586,7 @@ static void refresh_reg_table(void)
 			vals[row] = inp[i];
 		} else {
 			uint16_t v = 0;
-			ok[row] = MbClient_ReadInput(g_mb.mb, g_regs[row].addr, 1, &v);
+			ok[row] = inp_each && MbClient_ReadInput(g_mb.mb, g_regs[row].addr, 1, &v);
 			vals[row] = v;
 		}
 	}
@@ -600,7 +654,7 @@ static void on_connect(void)
 			return;
 		}
 	} else {
-		/* TCP: IP + port + uid */
+		/* TCP: IP + port (Modbus TCP 不需要 UID, unit id 固定 1) */
 		uint8_t ip4[4];
 		if (!read_ip_edit(g_mb.hIp, ip4)) {
 			MessageBoxW(g_mb.hSelf,
@@ -614,23 +668,14 @@ static void on_connect(void)
 		GetWindowTextW(g_mb.hPort, wp, 16);
 		int port = _wtoi(wp);
 		if (port <= 0 || port > 65535) port = 502;
-		wchar_t wu[16];
-		GetWindowTextW(g_mb.hUidTcp, wu, 16);
-		int uv = _wtoi(wu);
-		if (uv < 1 || uv > 247) {
-			MessageBoxW(g_mb.hSelf, L"从机 ID 应在 1-247", L"输入错误",
-			            MB_ICONERROR);
-			return;
-		}
-		uid = (uint8_t)uv;
 
 		wchar_t m[128];
-		swprintf(m, 128, L"正在连接 %hs:%d (uid=%u)...", ip, port, uid);
+		swprintf(m, 128, L"正在连接 %hs:%d...", ip, port);
 		log_append(m);
 		/* 真正进入阻塞连接前禁用按钮, 防止重入. */
 		EnableWindow(g_mb.hConn, FALSE);
 		SetWindowTextW(g_mb.hConn, L"正在连接...");
-		bool ok = MbClient_ConnectTcp(g_mb.mb, ip, (uint16_t)port, uid);
+		bool ok = MbClient_ConnectTcp(g_mb.mb, ip, (uint16_t)port, 1);
 		if (!ok) {
 			show_mb_error(L"TCP 连接");
 			SetWindowTextW(g_mb.hConn, L"连接");
@@ -640,11 +685,16 @@ static void on_connect(void)
 	}
 
 	set_conn_state(true);
-	/* 连接后立即加载所有面板 + 寄存器表的实际值 */
-	refresh_do();
-	refresh_di();
-	refresh_ai();
-	refresh_reg_table();
+	/* 连接后立即加载所有面板 + 寄存器表的实际值.
+	 * 首次读即完全无响应 (非 Modbus 设备 / 波特率或 UID 不对): 跳过剩余刷新,
+	 * 否则每个读取各等 ~1s 超时会把界面卡住半分钟. */
+	if (!refresh_do() && MbClient_LastNoResponse(g_mb.mb)) {
+		log_append(L"设备无响应 (非 Modbus RTU 设备, 或波特率/UID 不匹配), 已跳过初始刷新");
+	} else {
+		refresh_di();
+		refresh_ai();
+		refresh_reg_table();
+	}
 	wchar_t m[64];
 	swprintf(m, 64, L"已连接 (%ls)", rtu ? L"RTU" : L"TCP");
 	log_append(m);
@@ -964,6 +1014,11 @@ static void on_refresh_all(void)
 	}
 	log_append(L"开始刷新全部...");
 	bool a = refresh_do();
+	if (!a && MbClient_LastNoResponse(g_mb.mb)) {
+		/* 设备完全无响应: 剩余读取必然同样超时, 跳过 (避免界面长时间卡住) */
+		log_append(L"设备无响应, 跳过本轮剩余刷新");
+		return;
+	}
 	bool b = refresh_di();
 	bool c = refresh_ai();
 	refresh_reg_table();
@@ -984,6 +1039,9 @@ static void on_timer(void)
 {
 	if (!g_mb.connected) return;
 	bool ok = refresh_do();
+	if (!ok && MbClient_LastNoResponse(g_mb.mb)) {
+		return;   /* 设备无响应: 跳过本轮剩余, 避免逐项超时拖住 UI */
+	}
 	ok = refresh_di() && ok;
 	ok = refresh_ai() && ok;
 	/* 连接仍有效时同时刷新全部保持/输入寄存器 */
@@ -1076,7 +1134,7 @@ static void create_controls(HWND hWnd)
 	create_label(L"状态:", gx + 352, 30, 36, 14);
 	g_mb.hStatus = create_label(L"○ 未连接", gx + 388, 30, 120, 14);
 
-	/* 行2: TCP 行 (默认显示) — IP + 端口 + uid */
+	/* 行2: TCP 行 (默认显示) — IP + 端口 */
 	g_mb.hTcpLbl1 = create_label(L"目标 IP:", gx + 12, 60, 50, 14);
 	g_mb.hIp = create_edit(gx + 64, 56, 140, 22, IDC_MB_IP1, 0);
 	/* 默认填 192.168.12.101 */
@@ -1084,9 +1142,6 @@ static void create_controls(HWND hWnd)
 	g_mb.hTcpLbl2 = create_label(L"端口:", gx + 230, 60, 32, 14);
 	g_mb.hPort = create_edit(gx + 262, 56, 48, 22, IDC_MB_PORT, ES_NUMBER);
 	SetWindowTextW(g_mb.hPort, L"502");
-	g_mb.hTcpLbl3 = create_label(L"UID:", gx + 320, 60, 30, 14);
-	g_mb.hUidTcp = create_edit(gx + 350, 56, 40, 22, IDC_MB_UID, ES_NUMBER);
-	SetWindowTextW(g_mb.hUidTcp, L"1");
 
 	/* 行2 (重叠位置, 默认隐藏): RTU 行 — COM + 波特率 + uid */
 	g_mb.hRtuLbl1 = create_label(L"串口:", gx + 12, 60, 32, 14);
@@ -1109,7 +1164,6 @@ static void create_controls(HWND hWnd)
 	SendMessageW(g_mb.hBaud, CB_SETCURSEL, 1, 0); /* 默认 9600 */
 	g_mb.hRtuLbl3 = create_label(L"UID:", gx + 290, 60, 30, 14);
 	g_mb.hUidRtu = create_edit(gx + 320, 56, 40, 22, IDC_MB_UID, ES_NUMBER);
-	/* 注意: TCP/RTU 共用 IDC_MB_UID id (同一时刻只显示一个, 命令处理按通道取值). */
 	SetWindowTextW(g_mb.hUidRtu, L"1");
 
 	/* 默认 TCP, 隐藏 RTU 行 */
